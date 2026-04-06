@@ -1,0 +1,9 @@
+[project]
+name = "rampg-docs"
+version = "0.1.0"
+description = "Documentation build dependencies for rampg"
+requires-python = ">=3.10"
+dependencies = [
+    "sphinx",
+    "breathe",
+]
