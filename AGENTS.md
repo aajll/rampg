@@ -1,11 +1,13 @@
 # AGENTS.md
 
-## Project-specific instructions
+---
+
+## 1) Project-specific instructions
 
 **Project:** `rampg`
 **Primary goal:** A lightweight, unit-agnostic linear ramp generator with asymmetric rise/fall rates and output clamping, designed for deterministic embedded control loops in C11.
 
-### Essential commands
+### 1.1 Essential commands
 
 #### Configure and build (library only)
 
@@ -22,27 +24,40 @@ meson compile -C build
 meson test -C build --verbose
 ```
 
-### CI / source of truth
+#### Notes
+
+- `meson setup` generates the auto-included `rampg_version.h` into the **build directory**.
+
+---
+
+## 2) CI / source of truth
 
 - CI definitions live in `.github/workflows/ci.yml`.
-- Prefer running the same commands locally as CI runs.
-- If `pre-commit` is configured later, run it before committing.
+- Prefer running the same commands locally as CI runs (see §1.1 above).
+- If `pre-commit` is configured later, run `pre-commit run --all-files` before committing.
 
-## Docs / commit conventions
+---
 
-- Use Conventional Commits when asked to commit.
-- Keep commits focused and explain why the change exists.
+## 3) Docs / commit conventions
 
-## C code style (MANDATORY)
+- Use **Conventional Commits** format when asked to commit.
+- Keep commits focused; explain _why_ in the message body.
+- User-visible changes must be recorded in `CHANGELOG.md` (Keep a Changelog format).
+- Contributor expectations are documented in `CONTRIBUTING.md`; keep it in sync with this file.
 
-### Build and configuration
+---
 
-- Use the Meson build system; do not introduce another build system.
-- Update `meson.build` when adding or removing source files.
+## 4) C style expectations
+
+### Build & configuration
+
+- Use the Meson build system. Do not introduce CMake, Make, or other systems.
+- Update `meson.build` / `tests/meson.build` when adding or removing source files.
+- Use `rampg_conf.h` for compile-time configuration options. This header is automatically included by `rampg.h` and any option can be overridden by defining it before the include.
 
 ### Formatting
 
-- `.clang-format` is present and should be used on modified `.c` and `.h` files.
+- `.clang-format` is present and **mandatory**. Run `clang-format -i` on all modified `.c` / `.h` files before committing.
 - Do not reformat unrelated code.
 - Key settings: 8-space indent, `BreakBeforeBraces: Linux`, column limit 80.
 
@@ -74,18 +89,26 @@ Every `.c` file must contain these section headers in order:
 /* ================ GLOBAL FUNCTIONS ======================================== */
 ```
 
-Do NOT invent alternative section styles (e.g., `/* ── Section ── */`). Use the exact banner format shown above. Sections may be empty — that is intentional (communicates absence).
+Do NOT invent alternative section styles (e.g., `/* ── Section ── */`). Use the exact banner format shown above. Sections may be empty; that is intentional and communicates absence.
 
-### Style and correctness
+### Style & correctness
 
-- Match the conventions in the existing files.
+- Match conventions in the existing files (indentation, braces, naming).
 - Keep public headers minimal and stable.
-- Prefer explicit fixed-width integer types when ABI or serialization matters.
-- Use `rampg_conf.h` for compile-time configuration options. This header is automatically included by `rampg.h` and can be overridden before including the main header.
-- Document preconditions with `@pre` annotations in doxygen comments.
+- Document preconditions with `@pre` annotations in Doxygen comments on every public function.
+- Prefer explicit fixed-width integer types when ABI or serialisation matters. The public `rampg_t` deliberately uses plain `float` since the library is unit-agnostic and single-precision is the natural choice for embedded control loops.
+- No heap allocation (`malloc` / `free` / VLAs). The caller owns the `rampg_t` storage.
+
+### Error handling
+
+- Public functions return `void`, the current output value, or `bool`. No `errno`; no exceptions.
+- The library does NOT perform runtime precondition checks. Preconditions are documented via `@pre`. Honouring them is the caller's responsibility.
 
 ### Testing
 
-- Run `meson test -C build` after changes.
-- Add a test case for each bug fix.
-- Keep tests in `tests/test_*.c`.
+- Run `meson test -C build` after every change.
+- Add a test case for each bug fix and for each new feature.
+- Tests live in `tests/test_*.c`; all tests must pass on both Linux and macOS (CI matrix).
+- Tests must be deterministic. Do not depend on wall-clock time or thread scheduling.
+
+---
