@@ -1,6 +1,10 @@
 /**
- * @file rampg.c
- * @brief Implementation of rampg — a linear ramp generator.
+ * SPDX-License-Identifier: MIT
+ *
+ * @file: rampg.c
+ *
+ * @brief
+ *    Implementation of rampg — a linear ramp generator.
  */
 
 /* ================ INCLUDES ================================================ */

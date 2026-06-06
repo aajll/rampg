@@ -1,6 +1,10 @@
 /**
- * @file rampg_conf.h
- * @brief Public configuration header for rampg.
+ * SPDX-License-Identifier: MIT
+ *
+ * @file: rampg_conf.h
+ *
+ * @brief
+ *    Public configuration header for rampg.
  *
  * @details
  *    This header provides compile-time configuration for the rampg module.
