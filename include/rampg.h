@@ -1,6 +1,10 @@
 /**
- * @file rampg.h
- * @brief Public API for rampg — a linear ramp generator.
+ * SPDX-License-Identifier: MIT
+ *
+ * @file: rampg.h
+ *
+ * @brief
+ *    Public API for rampg — a linear ramp generator.
  */
 
 #ifndef RAMPG_H_
