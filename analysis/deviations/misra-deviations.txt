@@ -1,0 +1,28 @@
+# Project-level MISRA deviations (cppcheck suppressions).
+#
+# Prefer a justified inline cppcheck-suppress for a single source location.
+# Every active entry in this file must have a preceding comment that explains
+# why the deviation is necessary. Use :file or :file:line to keep its scope as
+# narrow as practical.
+#
+# Example (leave commented until deliberately adopted):
+# External code is maintained upstream and is outside the remediation boundary.
+# *:*/vendor/*
+#
+# Audit this file and inline deviations with:
+#   misch deviations --check-stale
+#
+# Rule 15.5 (advisory), "A function should have a single point of exit at the
+# end": suppressed project-wide. Early returns for argument validation and
+# error paths are the house style; folding them into single-exit nesting
+# deepens indentation and obscures the happy path without a corresponding
+# gain in analysability. This deviation is adopted from ngmp projects.
+misra-c2012-15.5
+#
+# Rule 8.7 (advisory), "Functions and objects should not be defined with
+# external linkage if they are referenced in only one translation unit":
+# suppressed project-wide. rampg is a library; its public API symbols have
+# external linkage by design and are expected to be referenced from only one
+# TU within a given consumer build. Single-TU reference counts reflect
+# library usage, not accidental linkage.
+misra-c2012-8.7

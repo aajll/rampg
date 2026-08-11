@@ -98,6 +98,8 @@ rampg_update(rampg_t *ramp, float dt)
                 } else {
                         ramp->value -= step;
                 }
+        } else {
+                /* diff == 0.0f: already at target, nothing to do */
         }
 
         ramp->value = clamp(ramp->value, ramp->limit_min, ramp->limit_max);
