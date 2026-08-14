@@ -45,4 +45,15 @@
 #define RAMPG_DEFAULT_RATE (100.0f)
 #endif
 
+#ifndef RAMPG_DEFAULT_SHAPE
+/**
+ * @def RAMPG_DEFAULT_SHAPE
+ * @brief Default ramp shape at initialization.
+ *
+ * One of the rampg_shape_t values: RAMPG_SHAPE_LINEAR (constant-rate
+ * step) or RAMPG_SHAPE_SIGMOID (quintic S-curve at the same peak rate).
+ */
+#define RAMPG_DEFAULT_SHAPE RAMPG_SHAPE_LINEAR
+#endif
+
 #endif /* RAMPG_CONF_H_ */

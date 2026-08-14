@@ -4,7 +4,7 @@
  * @file: rampg.h
  *
  * @brief
- *    Public API for rampg — a linear ramp generator.
+ *    Public API for rampg, a linear and S-curve (sigmoid) ramp generator.
  */
 
 #ifndef RAMPG_H_
@@ -25,18 +25,36 @@ extern "C" {
 /* ================ STRUCTURES ============================================== */
 
 /**
+ * @brief Ramp profile shape.
+ *
+ * RAMPG_SHAPE_LINEAR: constant-rate step toward the target.
+ * RAMPG_SHAPE_SIGMOID: quintic S-curve with a flat start and end,
+ * sized so that its peak rate equals the configured ramp rate.
+ */
+typedef enum {
+        RAMPG_SHAPE_LINEAR,  /**< Constant-rate step. */
+        RAMPG_SHAPE_SIGMOID, /**< Quintic S-curve at the same peak rate. */
+} rampg_shape_t;
+
+/**
  * @brief Ramp generator state.
  *
  * Plain struct — caller owns storage (stack, static, or embedded in a
  * larger struct). Initialise with rampg_init() before use.
  */
 typedef struct {
-        float value;     /**< Current output value. */
-        float target;    /**< Target value. */
-        float rise_rate; /**< Rise rate (units/s). */
-        float fall_rate; /**< Fall rate (units/s). */
-        float limit_min; /**< Output clamp minimum. */
-        float limit_max; /**< Output clamp maximum. */
+        float value;         /**< Current output value. */
+        float target;        /**< Target value. */
+        float rise_rate;     /**< Rise rate (units/s). */
+        float fall_rate;     /**< Fall rate (units/s). */
+        float limit_min;     /**< Output clamp minimum. */
+        float limit_max;     /**< Output clamp maximum. */
+        rampg_shape_t shape; /**< Ramp profile (linear or S-curve). */
+        float move_start;    /**< Start value of the planned move. */
+        float move_end;      /**< End value of the planned move. */
+        float move_duration; /**< Planned move duration in seconds. */
+        float move_elapsed;  /**< Elapsed move time in seconds. */
+        bool plan_valid;     /**< True when the planned move is current. */
 } rampg_t;
 
 /* ================ TYPEDEFS ================================================ */
@@ -109,12 +127,31 @@ void rampg_set_rates(rampg_t *ramp, float rise_rate, float fall_rate);
 void rampg_set_limits(rampg_t *ramp, float min, float max);
 
 /**
+ * @brief Set the ramp profile shape.
+ *
+ * Switching between RAMPG_SHAPE_LINEAR and RAMPG_SHAPE_SIGMOID takes
+ * effect at the next rampg_update(). A pending move is re-planned from
+ * the current value, so no discontinuity is introduced.
+ *
+ * @pre @p ramp has been initialised with rampg_init().
+ *
+ * @param ramp          Pointer to ramp instance.
+ * @param shape         Desired ramp profile.
+ */
+void rampg_set_shape(rampg_t *ramp, rampg_shape_t shape);
+
+/**
  * @brief Advance the ramp by @p dt seconds.
  *
  * Moves the output value toward the effective target (target clamped
- * to limits) at the configured rate, then applies output clamping.
+ * to limits) using the configured shape, then applies output clamping.
  * The stored target is not modified, so widening limits later recovers
  * the original intent.
+ *
+ * LINEAR shape steps at the configured rate. SIGMOID shape follows a
+ * quintic S-curve sized so that its peak rate equals the configured
+ * rate; the move is re-planned from the current value whenever the
+ * effective target, limits, or rates change.
  *
  * @pre @p ramp has been initialised with rampg_init().
  * @pre @p dt >= 0.

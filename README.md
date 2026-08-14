@@ -2,11 +2,12 @@
 
 [![CI](https://github.com/aajll/rampg/actions/workflows/ci.yml/badge.svg)](https://github.com/aajll/rampg/actions/workflows/ci.yml)
 
-A lightweight, unit-agnostic linear ramp generator with asymmetric rise/fall rates and output clamping, designed for deterministic embedded control loops in C11.
+A lightweight, unit-agnostic ramp generator with linear and S-curve (sigmoid) profiles, asymmetric rise/fall rates, and output clamping, designed for deterministic embedded control loops in C11.
 
 ## Features
 
 - **Linear ramping** between a current value and a configurable target at a caller-specified rate
+- **S-curve (sigmoid) profile** with a flat start and end, sized so the peak rate equals the configured rate, via `rampg_set_shape`
 - **Asymmetric rates** with independent rise and fall settings via `rampg_set_rates`
 - **Output clamping** to caller-supplied minimum and maximum limits, applied on every update
 - **Unit-agnostic** plain `float` output. Caller decides the meaning (volts, hertz, amps, RPM, etc.)
@@ -98,6 +99,19 @@ rampg_set_limits(&vbus, 0.0f, 800.0f);
 rampg_set_target(&vbus, 400.0f);
 ```
 
+### S-curve example
+
+For a smoother transition with a flat start and end, select the sigmoid profile. The configured rate sets the peak rate; the move begins and ends at zero velocity and is re-planned from the current value whenever the target, limits, or rates change.
+
+```c
+rampg_t vbus;
+rampg_init(&vbus, 0.0f);
+rampg_set_rate(&vbus, 50.0f);          /* 50 V/s peak */
+rampg_set_limits(&vbus, 0.0f, 800.0f);
+rampg_set_shape(&vbus, RAMPG_SHAPE_SIGMOID);
+rampg_set_target(&vbus, 400.0f);
+```
+
 ## Building
 
 ```sh
@@ -131,9 +145,10 @@ void rampg_set_target(rampg_t *ramp, float target);
 void rampg_set_rate(rampg_t *ramp, float rate);
 void rampg_set_rates(rampg_t *ramp, float rise_rate, float fall_rate);
 void rampg_set_limits(rampg_t *ramp, float min, float max);
+void rampg_set_shape(rampg_t *ramp, rampg_shape_t shape);
 ```
 
-`rampg_set_rate` applies the same rate to both directions. `rampg_set_rates` configures them independently. `rampg_set_limits` clamps the current value to the new range immediately. The stored target is not modified, so widening the limits later recovers the original intent.
+`rampg_set_rate` applies the same rate to both directions. `rampg_set_rates` configures them independently. `rampg_set_limits` clamps the current value to the new range immediately. `rampg_set_shape` selects the ramp profile. The stored target is not modified, so widening the limits later recovers the original intent.
 
 ### Runtime
 
@@ -143,7 +158,7 @@ float rampg_get(const rampg_t *ramp);
 bool  rampg_at_target(const rampg_t *ramp);
 ```
 
-`rampg_update` advances the output toward the effective target (the stored target clamped to the active limits) by `rate * dt`, snaps to the effective target if the step would overshoot, then re-clamps to the active limits. It returns the updated output value.
+`rampg_update` advances the output toward the effective target (the stored target clamped to the active limits) using the configured shape, then re-clamps to the active limits. In LINEAR shape it steps by `rate * dt` and snaps to the effective target when the step would overshoot. In SIGMOID shape it follows a quintic S-curve re-planned from the current value whenever the target, limits, or rates change, sized so the peak rate equals the configured rate. It returns the updated output value.
 
 `rampg_at_target` reports whether the output equals the effective target. This uses exact float equality, which is reachable because `rampg_update` explicitly snaps to the effective target when the step would overshoot.
 
@@ -153,24 +168,30 @@ For per-function documentation, see the Doxygen comments in `include/rampg.h`.
 
 ```c
 typedef struct {
-        float value;     /* Current output value */
-        float target;    /* Stored target (unclamped) */
-        float rise_rate; /* Rise rate, units/s */
-        float fall_rate; /* Fall rate, units/s */
-        float limit_min; /* Output clamp minimum */
-        float limit_max; /* Output clamp maximum */
+        float value;         /* Current output value */
+        float target;        /* Stored target (unclamped) */
+        float rise_rate;     /* Rise rate, units/s */
+        float fall_rate;     /* Fall rate, units/s */
+        float limit_min;     /* Output clamp minimum */
+        float limit_max;     /* Output clamp maximum */
+        rampg_shape_t shape; /* Ramp profile (linear or S-curve) */
+        float move_start;    /* Start value of the planned move */
+        float move_end;      /* End value of the planned move */
+        float move_duration; /* Planned move duration in seconds */
+        float move_elapsed;  /* Elapsed move time in seconds */
+        bool plan_valid;     /* True when the planned move is current */
 } rampg_t;
-```
 
 `rampg_t` is a plain aggregate with no pointers. It is safe to `memcpy`, embed in a larger struct, or place in shared memory provided the usual thread-safety caveats are respected.
 
 ### Configuration macros
 
-| Macro                | Default       | Meaning                                                            |
-| -------------------- | ------------- | ------------------------------------------------------------------ |
-| `RAMPG_DEFAULT_RATE` | `100.0f`      | Default rise and fall rate set by `rampg_init` (units per second). |
-| `RAMPG_LIMIT_MIN`    | `-1000000.0f` | Default output clamp minimum set by `rampg_init`.                  |
-| `RAMPG_LIMIT_MAX`    | `1000000.0f`  | Default output clamp maximum set by `rampg_init`.                  |
+| Macro                 | Default              | Meaning                                                            |
+| --------------------- | -------------------- | ------------------------------------------------------------------ |
+| `RAMPG_DEFAULT_RATE`  | `100.0f`             | Default rise and fall rate set by `rampg_init` (units per second). |
+| `RAMPG_LIMIT_MIN`     | `-1000000.0f`        | Default output clamp minimum set by `rampg_init`.                  |
+| `RAMPG_LIMIT_MAX`     | `1000000.0f`         | Default output clamp maximum set by `rampg_init`.                  |
+| `RAMPG_DEFAULT_SHAPE` | `RAMPG_SHAPE_LINEAR` | Default ramp profile set by `rampg_init`.                          |
 
 Override any of these by defining the macro before including `rampg.h`:
 
@@ -185,17 +206,18 @@ The public API does not perform runtime precondition checks. Preconditions are d
 
 The contract for each function is:
 
-| Function           | Preconditions                                                     |
-| ------------------ | ----------------------------------------------------------------- |
-| `rampg_init`       | `ramp != NULL`.                                                   |
-| `rampg_reset`      | `ramp` has been initialised.                                      |
-| `rampg_set_target` | `ramp` has been initialised.                                      |
-| `rampg_set_rate`   | `ramp` has been initialised. `rate > 0`.                          |
-| `rampg_set_rates`  | `ramp` has been initialised. `rise_rate > 0` and `fall_rate > 0`. |
-| `rampg_set_limits` | `ramp` has been initialised. `min <= max`.                        |
-| `rampg_update`     | `ramp` has been initialised. `dt >= 0`.                           |
-| `rampg_get`        | `ramp` has been initialised.                                      |
-| `rampg_at_target`  | `ramp` has been initialised.                                      |
+| Function           | Preconditions                                                      |
+| ------------------ | ------------------------------------------------------------------ |
+| `rampg_init`       | `ramp != NULL`.                                                    |
+| `rampg_reset`      | `ramp` has been initialised.                                       |
+| `rampg_set_target` | `ramp` has been initialised.                                       |
+| `rampg_set_rate`   | `ramp` has been initialised. `rate > 0`.                           |
+| `rampg_set_rates`  | `ramp` has been initialised. `rise_rate > 0` and `fall_rate > 0`.  |
+| `rampg_set_limits` | `ramp` has been initialised. `min <= max`.                         |
+| `rampg_set_shape`  | `ramp` has been initialised.                                       |
+| `rampg_update`     | `ramp` has been initialised. `dt >= 0`.                            |
+| `rampg_get`        | `ramp` has been initialised.                                       |
+| `rampg_at_target`  | `ramp` has been initialised.                                       |
 
 Inputs that violate these preconditions invoke undefined behaviour in the same sense as any C library function. Validate at the call site if your application cannot guarantee them.
 
@@ -236,7 +258,7 @@ rampg is a single-axis control primitive. The following are explicitly out of sc
 
 - **No internal time source**: the caller supplies `dt`. The library does not query a clock or depend on an OS.
 - **No runtime precondition checks**: preconditions are part of the contract, not enforced at runtime. See [Preconditions and Validation](#preconditions-and-validation).
-- **No higher-order shaping**: no S-curve, no jerk limit, no acceleration smoothing. The output is piecewise linear by design.
+- **No arbitrary shaping**: the two available profiles are the linear step and the quintic S-curve. There is no user-defined profile, jerk limit, or per-segment shaping.
 - **No thread safety**: the caller must provide mutual exclusion when a `rampg_t` is shared across threads or interrupt service routines.
 - **No persistence**: the `rampg_t` is volatile by design. Save and restore externally if you need persistence across resets.
 
@@ -252,5 +274,5 @@ rampg is a single-axis control primitive. The following are explicitly out of sc
 | **Time source**       | Caller supplies `dt` in seconds. The library has no dependency on clocks or OS.                                                                                          |
 | **WCET**              | Execution time is bounded and constant per call. No loops on input data; arithmetic is fixed.                                                                            |
 | **Limits and target** | The stored target is unclamped. `rampg_update` and `rampg_at_target` evaluate against the target clamped to the active limits, so widening limits later recovers intent. |
-| **Configuration**     | Override `RAMPG_DEFAULT_RATE`, `RAMPG_LIMIT_MIN`, `RAMPG_LIMIT_MAX` before including `rampg.h`, or via a toolchain-level `-D` flag.                                      |
+| **Configuration**     | Override `RAMPG_DEFAULT_RATE`, `RAMPG_LIMIT_MIN`, `RAMPG_LIMIT_MAX`, and `RAMPG_DEFAULT_SHAPE` before including `rampg.h`, or via a toolchain-level `-D` flag. |
 | **Version header**    | `rampg_version.h` is auto-generated by the Meson build and placed in the output build folder.                                                                            |

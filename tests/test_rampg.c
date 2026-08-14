@@ -503,6 +503,302 @@ TEST_CASE(test_sc_frequency_ramp_scenario)
         TEST_ASSERT(ticks >= 999 && ticks <= 1001);
 }
 
+/* ================ Sigmoid (S-curve) ======================================= */
+
+TEST_CASE(test_sigmoid_reaches_target_exactly)
+{
+        /* 0 -> 100 at peak rate 100; T = 1.875 * 100 / 100 = 1.875 s */
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rate(&ramp, 100.0f);
+        rampg_set_target(&ramp, 100.0f);
+
+        int steps = 0;
+        while (!rampg_at_target(&ramp) && steps < 100000) {
+                rampg_update(&ramp, 0.0001f);
+                steps++;
+        }
+
+        TEST_ASSERT(rampg_at_target(&ramp));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 100.0f));
+}
+
+TEST_CASE(test_sigmoid_duration_from_peak_rate)
+{
+        /* T = 1.875 * dist / rate = 1.875 * 1.0 / 1000 = 0.001875 s,
+         * and dt = 0.00025 s is an exact binary32 value, so the elapsed
+         * time stays an exact multiple of 2^-12 and completion happens
+         * on exactly the 8th step. */
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rate(&ramp, 1000.0f);
+        rampg_set_target(&ramp, 1.0f);
+
+        int steps = 0;
+        while (!rampg_at_target(&ramp) && steps < 100000) {
+                rampg_update(&ramp, 0.00025f);
+                steps++;
+        }
+
+        TEST_ASSERT(rampg_at_target(&ramp));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 1.0f));
+        TEST_ASSERT(steps == 8);
+}
+
+TEST_CASE(test_sigmoid_midpoint_at_half_duration)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rate(&ramp, 100.0f);
+        rampg_set_target(&ramp, 100.0f);
+
+        /* T = 1.875 s. dt = 0.001953125 = 2^-9 is exact in binary32 and
+         * divides the half-duration: T/2 = 0.9375 s = 480 steps, so the
+         * accumulated elapsed time stays an exact multiple of 2^-9 and
+         * u = 0.5 exactly. */
+        for (int i = 0; i < 480; i++) {
+                rampg_update(&ramp, 0.001953125f);
+        }
+
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 50.0f));
+}
+
+TEST_CASE(test_sigmoid_peak_rate_matches_configured)
+{
+        /* T = 0.1875 s; the maximum sampled |dv/dt| must reach the
+         * configured peak rate (within the 1e-3 step discretisation). */
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rate(&ramp, 100.0f);
+        rampg_set_target(&ramp, 10.0f);
+
+        float dt = 0.001f;
+        float peak = 0.0f;
+        for (int i = 0; i < 188 && !rampg_at_target(&ramp); i++) {
+                float before = rampg_get(&ramp);
+                rampg_update(&ramp, dt);
+                float dv = rampg_get(&ramp) - before;
+                if (dv < 0.0f) {
+                        dv = -dv;
+                }
+                if (dv / dt > peak) {
+                        peak = dv / dt;
+                }
+        }
+
+        TEST_ASSERT(rampg_at_target(&ramp));
+        TEST_ASSERT(peak > 85.0f && peak < 115.0f);
+}
+
+TEST_CASE(test_sigmoid_zero_velocity_at_ends)
+{
+        /* S'(0) = S'(1) = 0, so the first and last increments are
+         * small compared with the configured peak rate. */
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rate(&ramp, 100.0f);
+        rampg_set_target(&ramp, 100.0f);
+
+        float dt = 0.01f;
+        float first = rampg_update(&ramp, dt);
+        TEST_ASSERT(first < 10.0f);
+
+        float last = 0.0f;
+        while (!rampg_at_target(&ramp)) {
+                float before = rampg_get(&ramp);
+                rampg_update(&ramp, dt);
+                last = rampg_get(&ramp) - before;
+                if (last < 0.0f) {
+                        last = -last;
+                }
+        }
+
+        /* The move spans 187.5 steps, so the last increment is
+         * well below one step at peak rate. */
+        TEST_ASSERT(last < 10.0f);
+}
+
+TEST_CASE(test_sigmoid_no_overshoot)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rate(&ramp, 1000.0f);
+        rampg_set_target(&ramp, 5.0f);
+
+        for (int i = 0; i < 200 && !rampg_at_target(&ramp); i++) {
+                rampg_update(&ramp, 0.001f);
+                TEST_ASSERT(rampg_get(&ramp) >= 0.0f);
+                TEST_ASSERT(rampg_get(&ramp) <= 5.0f);
+        }
+
+        TEST_ASSERT(rampg_at_target(&ramp));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 5.0f));
+}
+
+TEST_CASE(test_sigmoid_retarget_mid_move)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rate(&ramp, 100.0f);
+        rampg_set_target(&ramp, 100.0f);
+
+        for (int i = 0; i < 50; i++) {
+                rampg_update(&ramp, 0.01f);
+        }
+
+        float mid = rampg_get(&ramp);
+        TEST_ASSERT(mid > 0.0f);
+
+        rampg_set_target(&ramp, 30.0f);
+
+        int steps = 0;
+        while (!rampg_at_target(&ramp) && steps < 100000) {
+                rampg_update(&ramp, 0.0001f);
+                steps++;
+        }
+
+        TEST_ASSERT(rampg_at_target(&ramp));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 30.0f));
+}
+
+TEST_CASE(test_sigmoid_rate_change_mid_move)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rate(&ramp, 100.0f);
+        rampg_set_target(&ramp, 100.0f);
+
+        for (int i = 0; i < 100; i++) {
+                rampg_update(&ramp, 0.01f);
+        }
+
+        float mid = rampg_get(&ramp);
+        TEST_ASSERT(mid > 0.0f);
+
+        rampg_set_rate(&ramp, 50.0f);
+
+        int steps = 0;
+        while (!rampg_at_target(&ramp) && steps < 100000) {
+                rampg_update(&ramp, 0.0001f);
+                steps++;
+        }
+
+        TEST_ASSERT(rampg_at_target(&ramp));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 100.0f));
+}
+
+TEST_CASE(test_sigmoid_shape_change_mid_move)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_rate(&ramp, 100.0f);
+        rampg_set_target(&ramp, 100.0f);
+
+        /* Half way there, linearly: value = 50 */
+        for (int i = 0; i < 50; i++) {
+                rampg_update(&ramp, 0.01f);
+        }
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 50.0f));
+
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+
+        int steps = 0;
+        while (!rampg_at_target(&ramp) && steps < 100000) {
+                rampg_update(&ramp, 0.0001f);
+                steps++;
+        }
+
+        TEST_ASSERT(rampg_at_target(&ramp));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 100.0f));
+}
+
+TEST_CASE(test_sigmoid_asymmetric_rates)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rates(&ramp, 100.0f, 50.0f);
+        rampg_set_target(&ramp, 100.0f);
+
+        /* Rise: T = 1.875 * 100 / 100 = 1.875 s */
+        while (!rampg_at_target(&ramp)) {
+                rampg_update(&ramp, 0.0001f);
+        }
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 100.0f));
+
+        rampg_set_target(&ramp, 0.0f);
+
+        /* Fall: T = 1.875 * 100 / 50 = 3.75 s; 100 s of updates is
+         * far beyond either duration, so completion is guaranteed. */
+        for (int i = 0; i < 100000 && !rampg_at_target(&ramp); i++) {
+                rampg_update(&ramp, 0.0001f);
+        }
+
+        TEST_ASSERT(rampg_at_target(&ramp));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 0.0f));
+}
+
+TEST_CASE(test_sigmoid_target_beyond_limit)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rate(&ramp, 100.0f);
+        rampg_set_limits(&ramp, 0.0f, 80.0f);
+        rampg_set_target(&ramp, 200.0f);
+
+        int steps = 0;
+        while (!rampg_at_target(&ramp) && steps < 100000) {
+                rampg_update(&ramp, 0.0001f);
+                steps++;
+                TEST_ASSERT(rampg_get(&ramp) <= 80.0f);
+        }
+
+        TEST_ASSERT(rampg_at_target(&ramp));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 80.0f));
+}
+
+TEST_CASE(test_sigmoid_zero_distance_move)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 5.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rate(&ramp, 100.0f);
+        rampg_set_target(&ramp, 5.0f);
+
+        TEST_ASSERT(rampg_at_target(&ramp));
+
+        for (int i = 0; i < 10; i++) {
+                rampg_update(&ramp, 0.01f);
+        }
+
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 5.0f));
+}
+
+TEST_CASE(test_sigmoid_zero_dt_no_progress)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rate(&ramp, 100.0f);
+        rampg_set_target(&ramp, 100.0f);
+
+        for (int i = 0; i < 10; i++) {
+                rampg_update(&ramp, 0.0f);
+        }
+
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 0.0f));
+        TEST_ASSERT(!rampg_at_target(&ramp));
+}
+
 /* ================ Runner ===================================================
  */
 
@@ -578,7 +874,28 @@ main(void)
         run_test(test_very_large_dt, "test_very_large_dt");
         run_test(test_small_dt_accumulation, "test_small_dt_accumulation");
         run_test(test_small_dt_precision, "test_small_dt_precision");
-
+        run_test(test_sigmoid_reaches_target_exactly,
+                 "sigmoid_reaches_target_exactly");
+        run_test(test_sigmoid_duration_from_peak_rate,
+                 "sigmoid_duration_from_peak_rate");
+        run_test(test_sigmoid_midpoint_at_half_duration,
+                 "sigmoid_midpoint_at_half_duration");
+        run_test(test_sigmoid_peak_rate_matches_configured,
+                 "sigmoid_peak_rate_matches_configured");
+        run_test(test_sigmoid_zero_velocity_at_ends,
+                 "sigmoid_zero_velocity_at_ends");
+        run_test(test_sigmoid_no_overshoot, "sigmoid_no_overshoot");
+        run_test(test_sigmoid_retarget_mid_move, "sigmoid_retarget_mid_move");
+        run_test(test_sigmoid_rate_change_mid_move,
+                 "sigmoid_rate_change_mid_move");
+        run_test(test_sigmoid_shape_change_mid_move,
+                 "sigmoid_shape_change_mid_move");
+        run_test(test_sigmoid_asymmetric_rates, "sigmoid_asymmetric_rates");
+        run_test(test_sigmoid_target_beyond_limit,
+                 "sigmoid_target_beyond_limit");
+        run_test(test_sigmoid_zero_distance_move, "sigmoid_zero_distance_move");
+        run_test(test_sigmoid_zero_dt_no_progress,
+                 "sigmoid_zero_dt_no_progress");
         /* SC integration scenarios */
         run_test(test_sc_precharge_scenario, "test_sc_precharge_scenario");
         run_test(test_sc_frequency_ramp_scenario,
