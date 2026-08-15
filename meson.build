@@ -1,7 +1,7 @@
 project(
   'rampg',
   'c',
-  version: '0.1.0',
+  version: '0.2.0',
   default_options: [
     'c_std=c11',
     'warning_level=3',
@@ -9,7 +9,7 @@ project(
   license: 'MIT',
 )
 
-project_description = 'A lightweight, unit-agnostic linear ramp generator with asymmetric rise/fall rates and output clamping, designed for deterministic embedded control loops in C11.'
+project_description = 'A lightweight, unit-agnostic ramp generator with linear and acceleration-limited S-curve profiles, asymmetric rise/fall rates and output clamping, designed for deterministic embedded control loops in C11.'
 
 ver = meson.project_version().split('.')
 major = ver[0].to_int()
@@ -30,6 +30,12 @@ generated_version_header = configure_file(
   install_dir: get_option('includedir') / 'rampg',
 )
 
+cc = meson.get_compiler('c')
+
+# rampg uses sqrtf() and isfinite() from <math.h>. On most toolchains these are
+# intrinsics, but glibc-style targets need an explicit link against libm.
+m_dep = cc.find_library('m', required: false)
+
 public_headers = include_directories('include')
 generated_headers = include_directories('.')
 
@@ -39,6 +45,7 @@ rampg_lib = static_library(
   'rampg',
   library_sources,
   include_directories: [public_headers, generated_headers],
+  dependencies: [m_dep],
   install: true,
 )
 
@@ -51,6 +58,7 @@ install_headers(
 rampg_dep = declare_dependency(
   include_directories: [public_headers, generated_headers],
   link_with: rampg_lib,
+  dependencies: [m_dep],
   sources: generated_version_header,
 )
 
@@ -63,6 +71,7 @@ pkg.generate(
   filebase: 'rampg',
   name: 'rampg',
   subdirs: 'rampg',
+  libraries: ['-lm'],
 )
 
 if get_option('build_tests')

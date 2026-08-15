@@ -1,14 +1,16 @@
 rampg
 =====
 
-A lightweight, unit-agnostic linear ramp generator with asymmetric rise/fall
-rates and output clamping, designed for deterministic embedded control loops
-in C11.
+A lightweight, unit-agnostic ramp generator with linear and
+acceleration-limited S-curve profiles, asymmetric rise/fall rates and output
+clamping, designed for deterministic embedded control loops in C11.
 
 Features
 --------
 
 - **Linear ramping** — smoothly transitions a float value toward a target
+- **S-curve profile** — bounds the output rate and how fast that rate changes
+- **Live setpoints** — the output rate is carried across a configuration change
 - **Asymmetric rates** — independent rise and fall rates
 - **Output clamping** — configurable min/max limits enforced on every update
 - **Unit-agnostic** — caller decides the meaning (volts, Hz, amps, etc.)

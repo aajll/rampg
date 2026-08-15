@@ -52,3 +52,7 @@ docs/_build/
 # uv
 docs/.venv/
 docs/uv.lock
+
+# Python bytecode (docs tooling)
+__pycache__/
+*.pyc
