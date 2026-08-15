@@ -49,10 +49,10 @@ typedef enum {
 } rampg_state_t;
 
 /**
- * @brief Ramp generator state.
+ * @brief Ramp generator instance.
  *
- * Plain struct — caller owns storage (stack, static, or embedded in a
- * larger struct). Initialise with rampg_init() before use.
+ * Plain struct; the caller owns the storage (stack, static, or embedded
+ * in a larger struct). Initialise with rampg_init() before use.
  */
 typedef struct {
         float value;         /**< Current output value. */

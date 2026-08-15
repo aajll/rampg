@@ -103,7 +103,7 @@ rampg_set_target(&vbus, 400.0f);
 
 ### S-curve example
 
-For a smoother transition with a flat start and end, select the sigmoid profile. The configured rate sets the peak rate; the move begins and ends at zero velocity and is re-planned from the current value whenever the target, limits, or rates change.
+For a smoother transition with a flat start and end, select the sigmoid profile. The configured rate sets the peak rate; the move begins and ends at zero velocity and is re-planned from the current value whenever the target, limits, rates, or shape change.
 
 ```c
 rampg_t vbus;
@@ -179,7 +179,7 @@ void  rampg_set_enabled(rampg_t *ramp, bool enabled);
 bool  rampg_is_enabled(const rampg_t *ramp);
 ```
 
-`rampg_update` advances the output toward the effective target (the stored target clamped to the active limits) using the configured shape, then re-clamps to the active limits. In LINEAR shape it steps by `rate * dt` and snaps to the effective target when the step would overshoot. In SIGMOID shape it follows a quintic S-curve re-planned from the current value whenever the target, limits, or rates change, sized so the peak rate equals the configured rate. It returns the updated output value.
+`rampg_update` advances the output toward the effective target (the stored target clamped to the active limits) using the configured shape, then re-clamps to the active limits. In LINEAR shape it steps by `rate * dt` and snaps to the effective target when the step would overshoot. In SIGMOID shape it follows a quintic S-curve re-planned from the current value whenever the target, limits, rates, or shape change, sized so the peak rate equals the configured rate. It returns the updated output value.
 
 `rampg_at_target` reports whether the output equals the effective target. This uses exact float equality, which is reachable because `rampg_update` explicitly snaps to the effective target when the step would overshoot.
 
@@ -209,7 +209,7 @@ typedef struct {
 } rampg_t;
 ```
 
-`rampg_t` is a plain aggregate with no pointers. It is safe to `memcpy`, embed in a larger struct, or place in shared memory provided the usual thread-safety caveats are respected. New fields are appended at the end, so existing field offsets and the struct size are stable across versions.
+`rampg_t` is a plain aggregate with no pointers. It is safe to `memcpy`, embed in a larger struct, or place in shared memory provided the usual thread-safety caveats are respected. The seven fields added in 0.2.0 are appended at the end, so existing field offsets are stable across versions, but `sizeof(rampg_t)` grows from 24 to 48 bytes.
 
 ### Configuration macros
 
@@ -247,6 +247,8 @@ The contract for each function is:
 | `rampg_at_target`  | `ramp` has been initialised.                                       |
 | `rampg_get_rate`   | `ramp` has been initialised.                                       |
 | `rampg_get_state`  | `ramp` has been initialised.                                       |
+| `rampg_set_enabled`| `ramp` has been initialised.                                       |
+| `rampg_is_enabled` | `ramp` has been initialised.                                       |
 
 Inputs that violate these preconditions invoke undefined behaviour in the same sense as any C library function. Validate at the call site if your application cannot guarantee them.
 
@@ -268,7 +270,7 @@ rampg works on any C11 toolchain with an IEEE-754 `float` and a conformant `<std
 | ------------------------- | ----------------------------------------------------------------------------------------- |
 | C11 toolchain             | Any C99 compiler with a working `<stdbool.h>` will also build but is not exercised by CI. |
 | IEEE-754 binary32 `float` | Universal on real targets.                                                                |
-| `<stdbool.h>` with `bool` | Used in the public API for `rampg_at_target`.                                             |
+| `<stdbool.h>` with `bool` | Used in the public API by `rampg_at_target`, `rampg_set_enabled`, and `rampg_is_enabled`. |
 
 Targets meeting these requirements are expected to work, including (but not limited to) x86_64, AArch64, ARMv7-M, ARMv8-M, RISC-V, AVR, and the TI C2000 family.
 

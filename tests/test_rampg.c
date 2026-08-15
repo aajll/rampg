@@ -660,7 +660,8 @@ TEST_CASE(test_sigmoid_retarget_mid_move)
         TEST_ASSERT(mid > 0.0f);
 
         rampg_set_target(&ramp, 30.0f);
-
+        /* Re-planning must not move the value before the next update. */
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), mid));
         int steps = 0;
         while (!rampg_at_target(&ramp) && steps < 100000) {
                 rampg_update(&ramp, 0.0001f);
@@ -709,7 +710,8 @@ TEST_CASE(test_sigmoid_rate_change_mid_move)
         TEST_ASSERT(mid > 0.0f);
 
         rampg_set_rate(&ramp, 50.0f);
-
+        /* Re-planning must not move the value before the next update. */
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), mid));
         int steps = 0;
         while (!rampg_at_target(&ramp) && steps < 100000) {
                 rampg_update(&ramp, 0.0001f);
@@ -734,7 +736,8 @@ TEST_CASE(test_sigmoid_shape_change_mid_move)
         TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 50.0f));
 
         rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-
+        /* Re-planning must not move the value before the next update. */
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 50.0f));
         int steps = 0;
         while (!rampg_at_target(&ramp) && steps < 100000) {
                 rampg_update(&ramp, 0.0001f);
@@ -764,7 +767,8 @@ TEST_CASE(test_sigmoid_shape_change_to_linear_mid_move)
         TEST_ASSERT(mid < 100.0f);
 
         rampg_set_shape(&ramp, RAMPG_SHAPE_LINEAR);
-
+        /* Re-planning must not move the value before the next update. */
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), mid));
         /* The remaining distance at 100 units/s is far below 10 s, so the
          * linear phase completes the move. */
         int steps = 0;
@@ -785,25 +789,34 @@ TEST_CASE(test_sigmoid_asymmetric_rates)
         rampg_set_rates(&ramp, 100.0f, 50.0f);
         rampg_set_target(&ramp, 100.0f);
 
-        /* Rise: T = 1.875 * 100 / 100 = 1.875 s */
+        /* Rise: T = 1.875 * 100 / 100 = 1.875 s. dt = 2^-9 s. The value
+         * rounds to the exact target just before the duration snap, so
+         * the move finishes at 959 steps (analytic 960). */
         int rise_steps = 0;
         while (!rampg_at_target(&ramp) && rise_steps < 100000) {
-                rampg_update(&ramp, 0.0001f);
+                rampg_update(&ramp, 0.001953125f);
                 rise_steps++;
         }
         TEST_ASSERT(rampg_at_target(&ramp));
         TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 100.0f));
+        TEST_ASSERT(rise_steps >= 950 && rise_steps <= 965);
 
         rampg_set_target(&ramp, 0.0f);
 
-        /* Fall: T = 1.875 * 100 / 50 = 3.75 s; 10 s of updates is
-         * far beyond either duration, so completion is guaranteed. */
-        for (int i = 0; i < 100000 && !rampg_at_target(&ramp); i++) {
-                rampg_update(&ramp, 0.0001f);
+        /* Fall: T = 1.875 * 100 / 50 = 3.75 s, exactly twice the rise
+         * duration, so the fall takes about twice as many steps as the
+         * rise. Swapping the rise and fall rates would swap these counts. */
+        int fall_steps = 0;
+        while (!rampg_at_target(&ramp) && fall_steps < 100000) {
+                rampg_update(&ramp, 0.001953125f);
+                fall_steps++;
         }
-
         TEST_ASSERT(rampg_at_target(&ramp));
         TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 0.0f));
+        TEST_ASSERT(fall_steps >= 1900 && fall_steps <= 1925);
+        TEST_ASSERT(fall_steps > rise_steps);
+        TEST_ASSERT(fall_steps >= 2 * rise_steps - 16);
+        TEST_ASSERT(fall_steps <= 2 * rise_steps + 16);
 }
 
 TEST_CASE(test_sigmoid_target_beyond_limit)
@@ -841,6 +854,68 @@ TEST_CASE(test_sigmoid_zero_distance_move)
         }
 
         TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 5.0f));
+}
+
+TEST_CASE(test_sigmoid_limit_narrowed_mid_move)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rate(&ramp, 100.0f);
+        rampg_set_target(&ramp, 50.0f);
+
+        /* T = 1.875 * 50 / 100 = 0.9375 s = 480 steps of 2^-9 s. After
+         * 240 steps, u = 0.5 and S(0.5) = 0.5, so the value is exactly
+         * 25. */
+        for (int i = 0; i < 240; i++) {
+                rampg_update(&ramp, 0.001953125f);
+        }
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 25.0f));
+
+        /* Narrowing the upper limit below the current value clamps the
+         * value immediately, to the effective target itself. */
+        rampg_set_limits(&ramp, 0.0f, 20.0f);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 20.0f));
+
+        /* The clamp lands the value on the effective target, so the ramp
+         * reports at target immediately. */
+        TEST_ASSERT(rampg_at_target(&ramp));
+}
+
+TEST_CASE(test_sigmoid_limit_widened_mid_move)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rate(&ramp, 100.0f);
+        rampg_set_limits(&ramp, 0.0f, 50.0f);
+        rampg_set_target(&ramp, 100.0f);
+
+        /* Effective target is the clamped limit, 50: T = 1.875 * 50 / 100
+         * = 0.9375 s = 480 steps of 2^-9 s. After 240 steps, u = 0.5 and
+         * S(0.5) = 0.5, so the value is exactly 25. */
+        for (int i = 0; i < 240; i++) {
+                rampg_update(&ramp, 0.001953125f);
+        }
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 25.0f));
+
+        /* Widening the limits restores the stored target; the stored
+         * target was never modified by the clamp. */
+        rampg_set_limits(&ramp, 0.0f, 500.0f);
+
+        /* Re-planned from the current value: T = 1.875 * 75 / 100 =
+         * 1.40625 s = 720 steps of 2^-9 s analytically; the value
+         * rounds to the target just before the duration snap, so the
+         * move completes at 719 steps. */
+        int steps = 0;
+        while (!rampg_at_target(&ramp) && steps < 100000) {
+                rampg_update(&ramp, 0.001953125f);
+                steps++;
+                TEST_ASSERT(rampg_get(&ramp) <= 100.0f);
+        }
+        TEST_ASSERT(rampg_at_target(&ramp));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 100.0f));
+        TEST_ASSERT(steps >= 719 && steps <= 721);
 }
 
 TEST_CASE(test_sigmoid_zero_dt_no_progress)
@@ -1215,6 +1290,10 @@ main(void)
                  "test_sigmoid_shape_change_mid_move");
         run_test(test_sigmoid_shape_change_to_linear_mid_move,
                  "test_sigmoid_shape_change_to_linear_mid_move");
+        run_test(test_sigmoid_limit_narrowed_mid_move,
+                 "test_sigmoid_limit_narrowed_mid_move");
+        run_test(test_sigmoid_limit_widened_mid_move,
+                 "test_sigmoid_limit_widened_mid_move");
         run_test(test_sigmoid_asymmetric_rates,
                  "test_sigmoid_asymmetric_rates");
         run_test(test_sigmoid_target_beyond_limit,

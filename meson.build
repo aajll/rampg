@@ -9,7 +9,7 @@ project(
   license: 'MIT',
 )
 
-project_description = 'A lightweight, unit-agnostic linear ramp generator with asymmetric rise/fall rates and output clamping, designed for deterministic embedded control loops in C11.'
+project_description = 'A lightweight, unit-agnostic ramp generator with linear and S-curve (sigmoid) profiles, asymmetric rise/fall rates and output clamping, designed for deterministic embedded control loops in C11.'
 
 ver = meson.project_version().split('.')
 major = ver[0].to_int()
