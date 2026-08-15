@@ -526,7 +526,9 @@ drive_checked(rampg_t *r, float dt, int max_ticks)
 {
         float rate_limit =
             (r->rise_rate > r->fall_rate) ? r->rise_rate : r->fall_rate;
-        float bound = r->accel * dt;
+        float accel_limit =
+            (r->rise_accel > r->fall_accel) ? r->rise_accel : r->fall_accel;
+        float bound = accel_limit * dt;
         float prev = rampg_get_rate(r);
         int ticks = 0;
 
@@ -707,6 +709,103 @@ TEST_CASE(test_scurve_asymmetric_rates)
         TEST_ASSERT(FLOAT_NEAR((float)up * 0.0001f, t_up, 0.01f));
         TEST_ASSERT(FLOAT_NEAR((float)down * 0.0001f, t_down, 0.01f));
         TEST_ASSERT(down < up);
+}
+
+TEST_CASE(test_scurve_asymmetric_accels)
+{
+        /*
+         * The acceleration limit is selected by direction, like the rate, so
+         * each leg keeps its own shape. The fall leg here eases four times
+         * faster than the rise leg.
+         */
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accels(&r, 250.0f, 1000.0f);
+        rampg_set_limits(&r, 0.0f, 1000.0f);
+
+        rampg_set_target(&r, 500.0f);
+        int up = drive_checked(&r, 0.0001f, 1000000);
+
+        rampg_set_target(&r, 0.0f);
+        int down = drive_checked(&r, 0.0001f, 1000000);
+
+        /* Both legs cover the same distance at the same rate limit, so the
+         * difference is exactly the two acceleration overheads. */
+        float t_up = scurve_duration(500.0f, 100.0f, 250.0f);
+        float t_down = scurve_duration(500.0f, 100.0f, 1000.0f);
+
+        TEST_ASSERT(FLOAT_NEAR((float)up * 0.0001f, t_up, 0.01f));
+        TEST_ASSERT(FLOAT_NEAR((float)down * 0.0001f, t_down, 0.01f));
+        TEST_ASSERT(down < up);
+}
+
+TEST_CASE(test_scurve_asymmetric_accel_bound_per_direction)
+{
+        /* Each leg must respect its own acceleration limit, not the other. */
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accels(&r, 200.0f, 4000.0f);
+        rampg_set_limits(&r, 0.0f, 1000.0f);
+
+        rampg_set_target(&r, 500.0f);
+        float prev = 0.0f;
+        int ticks = 0;
+        while (!rampg_at_target(&r) && (ticks < 200000)) {
+                rampg_update(&r, 0.001f);
+                float now = rampg_get_rate(&r);
+                if (!rampg_at_target(&r)) {
+                        /* Rising: bounded by rise_accel, well under
+                         * fall_accel. */
+                        TEST_ASSERT(fabsf(now - prev) <= 0.4f + 1e-4f);
+                }
+                prev = now;
+                ticks++;
+        }
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 500.0f));
+}
+
+TEST_CASE(test_scurve_set_accel_sets_both)
+{
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_accels(&r, 1.0f, 2.0f);
+        rampg_set_accel(&r, 42.0f);
+        TEST_ASSERT(FLOAT_EQ(r.rise_accel, 42.0f));
+        TEST_ASSERT(FLOAT_EQ(r.fall_accel, 42.0f));
+}
+
+TEST_CASE(test_scurve_precharge_asymmetric_scenario)
+{
+        /*
+         * The motivating case: a DC bus eased up slowly, then tripped down
+         * hard on a fault. A single symmetric acceleration limit cannot serve
+         * both, so assert each leg against its own closed form.
+         */
+        rampg_t vbus;
+        rampg_init(&vbus, 0.0f);
+        rampg_set_shape(&vbus, RAMPG_SHAPE_SCURVE);
+        rampg_set_rates(&vbus, 50.0f, 2000.0f);
+        rampg_set_accels(&vbus, 100.0f, 40000.0f);
+        rampg_set_limits(&vbus, 0.0f, 800.0f);
+
+        rampg_set_target(&vbus, 400.0f);
+        int up = drive_checked(&vbus, 0.0001f, 2000000);
+
+        rampg_set_target(&vbus, 0.0f);
+        int down = drive_checked(&vbus, 0.0001f, 2000000);
+
+        float t_up = scurve_duration(400.0f, 50.0f, 100.0f);
+        float t_down = scurve_duration(400.0f, 2000.0f, 40000.0f);
+
+        TEST_ASSERT(FLOAT_NEAR((float)up * 0.0001f, t_up, 0.02f));
+        TEST_ASSERT(FLOAT_NEAR((float)down * 0.0001f, t_down, 0.02f));
+        /* The rise eases over 8.5 s; the trip completes inside 0.3 s. */
+        TEST_ASSERT((float)up * 0.0001f > 8.0f);
+        TEST_ASSERT((float)down * 0.0001f < 0.3f);
 }
 
 TEST_CASE(test_scurve_retarget_carries_the_rate)
@@ -1205,6 +1304,17 @@ TEST_CASE(test_containment_bad_accel)
                         TEST_ASSERT(FLOAT_EQ(rampg_update(&r, 0.01f), held));
                 }
                 containment_recovers(&r);
+
+                /* A bad limit in the direction of travel holds; a bad one in
+                 * the other direction must not. */
+                rampg_t d;
+                containment_setup(&d, RAMPG_SHAPE_SCURVE);
+                float held_d = rampg_get(&d);
+                rampg_set_accels(&d, bad[i], 1000.0f);
+                TEST_ASSERT(FLOAT_EQ(rampg_update(&d, 0.01f), held_d));
+
+                rampg_set_accels(&d, 1000.0f, bad[i]);
+                TEST_ASSERT(rampg_update(&d, 0.01f) > held_d);
         }
 }
 
@@ -1685,6 +1795,14 @@ main(void)
         run_test(test_scurve_eases_in_and_out, "test_scurve_eases_in_and_out");
         run_test(test_scurve_no_overshoot, "test_scurve_no_overshoot");
         run_test(test_scurve_asymmetric_rates, "test_scurve_asymmetric_rates");
+        run_test(test_scurve_asymmetric_accels,
+                 "test_scurve_asymmetric_accels");
+        run_test(test_scurve_asymmetric_accel_bound_per_direction,
+                 "test_scurve_asymmetric_accel_bound_per_direction");
+        run_test(test_scurve_set_accel_sets_both,
+                 "test_scurve_set_accel_sets_both");
+        run_test(test_scurve_precharge_asymmetric_scenario,
+                 "test_scurve_precharge_asymmetric_scenario");
         run_test(test_scurve_retarget_carries_the_rate,
                  "test_scurve_retarget_carries_the_rate");
         run_test(test_scurve_progresses_under_a_moving_setpoint,

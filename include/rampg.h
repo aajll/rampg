@@ -71,7 +71,8 @@ typedef struct {
         float target;        /**< Target value, unclamped. */
         float rise_rate;     /**< Rise rate (units/s). */
         float fall_rate;     /**< Fall rate (units/s). */
-        float accel;         /**< Acceleration limit (units/s^2). */
+        float rise_accel;    /**< Rise acceleration limit (units/s^2). */
+        float fall_accel;    /**< Fall acceleration limit (units/s^2). */
         float limit_min;     /**< Output clamp minimum. */
         float limit_max;     /**< Output clamp maximum. */
         float vel;           /**< Internal: current output rate. */
@@ -90,8 +91,8 @@ typedef struct {
 /**
  * @brief Initialise a ramp generator.
  *
- * Sets the target to @p initial and the output rate to zero. Rates
- * default to RAMPG_DEFAULT_RATE, the acceleration limit to
+ * Sets the target to @p initial and the output rate to zero. Both rates
+ * default to RAMPG_DEFAULT_RATE, both acceleration limits to
  * RAMPG_DEFAULT_ACCEL, limits to RAMPG_LIMIT_MIN / RAMPG_LIMIT_MAX, the
  * shape to RAMPG_DEFAULT_SHAPE, and the ramp is enabled.
  *
@@ -144,7 +145,7 @@ void rampg_set_rate(rampg_t *ramp, float rate);
 void rampg_set_rates(rampg_t *ramp, float rise_rate, float fall_rate);
 
 /**
- * @brief Set the acceleration limit.
+ * @brief Set a symmetric acceleration limit (same for rise and fall).
  *
  * Bounds how fast the output rate may change under RAMPG_SHAPE_SCURVE,
  * and so sets how sharply the ramp eases in and out. A move long enough
@@ -158,6 +159,25 @@ void rampg_set_rates(rampg_t *ramp, float rise_rate, float fall_rate);
  * @param accel         Acceleration limit (units/s^2, must be > 0).
  */
 void rampg_set_accel(rampg_t *ramp, float accel);
+
+/**
+ * @brief Set asymmetric acceleration limits.
+ *
+ * The limit is selected by the direction of the move, the same way the
+ * rate is, so a slow controlled rise can be paired with a fast trip down
+ * without either leg compromising the other. A move that reverses
+ * direction is governed throughout by the limits for its new direction.
+ * Ignored by RAMPG_SHAPE_LINEAR.
+ *
+ * @pre @p ramp has been initialised with rampg_init().
+ * @pre @p rise_accel > 0.
+ * @pre @p fall_accel > 0.
+ *
+ * @param ramp          Pointer to ramp instance.
+ * @param rise_accel    Limit when ramping up (units/s^2, must be > 0).
+ * @param fall_accel    Limit when ramping down (units/s^2, must be > 0).
+ */
+void rampg_set_accels(rampg_t *ramp, float rise_accel, float fall_accel);
 
 /**
  * @brief Set output clamp limits.
@@ -197,8 +217,9 @@ void rampg_set_shape(rampg_t *ramp, rampg_shape_t shape);
  * A disabled ramp holds its output: rampg_update() leaves the value
  * unchanged and rampg_get_rate() reads zero. Disabling resets the output
  * rate to zero, so re-enabling eases away from rest rather than resuming
- * at a rate the output no longer has. The target, rates, acceleration,
- * limits, and shape are preserved. A ramp is enabled after rampg_init().
+ * at a rate the output no longer has. The target, rates, acceleration
+ * limits, output limits, and shape are preserved. A ramp is enabled
+ * after rampg_init().
  *
  * @pre @p ramp has been initialised with rampg_init().
  *
@@ -222,8 +243,9 @@ void rampg_set_enabled(rampg_t *ramp, bool enabled);
  *
  * The call is total. It holds the output unchanged, rather than
  * corrupting the state, when @p dt is not a finite value greater than
- * zero, when the effective target is not finite, or when the governing
- * rate (or, under SCURVE, the acceleration) is not greater than zero.
+ * zero, when the effective target is not finite, or when the rate (or,
+ * under SCURVE, the acceleration) governing the move's direction is not
+ * greater than zero.
  *
  * @pre @p ramp has been initialised with rampg_init().
  *

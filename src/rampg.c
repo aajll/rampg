@@ -91,11 +91,11 @@ brake_envelope(float dist, float accel, float dt)
  * ramp should take, and updates ramp->vel to the rate applied.
  */
 static float
-scurve_step(rampg_t *ramp, float target, float rate, float dt)
+scurve_step(rampg_t *ramp, float target, float rate, float accel, float dt)
 {
         float diff = target - ramp->value;
         float dist = absf(diff);
-        float adt = ramp->accel * dt;
+        float adt = accel * dt;
 
         /* Approach the cruise rate, no faster than the acceleration limit. */
         float want = (diff >= 0.0f) ? rate : -rate;
@@ -103,7 +103,7 @@ scurve_step(rampg_t *ramp, float target, float rate, float dt)
         float vel = ramp->vel + delta;
 
         /* Never exceed the speed from which the ramp can still stop. */
-        float envelope = brake_envelope(dist, ramp->accel, dt);
+        float envelope = brake_envelope(dist, accel, dt);
         vel = clamp(vel, -envelope, envelope);
         ramp->vel = vel;
 
@@ -157,7 +157,8 @@ rampg_init(rampg_t *ramp, float initial)
         ramp->target = initial;
         ramp->rise_rate = RAMPG_DEFAULT_RATE;
         ramp->fall_rate = RAMPG_DEFAULT_RATE;
-        ramp->accel = RAMPG_DEFAULT_ACCEL;
+        ramp->rise_accel = RAMPG_DEFAULT_ACCEL;
+        ramp->fall_accel = RAMPG_DEFAULT_ACCEL;
         ramp->limit_min = RAMPG_LIMIT_MIN;
         ramp->limit_max = RAMPG_LIMIT_MAX;
         /* Establish the invariant the update relies on: the value is always
@@ -193,7 +194,15 @@ rampg_set_rates(rampg_t *ramp, float rise_rate, float fall_rate)
 void
 rampg_set_accel(rampg_t *ramp, float accel)
 {
-        ramp->accel = accel;
+        ramp->rise_accel = accel;
+        ramp->fall_accel = accel;
+}
+
+void
+rampg_set_accels(rampg_t *ramp, float rise_accel, float fall_accel)
+{
+        ramp->rise_accel = rise_accel;
+        ramp->fall_accel = fall_accel;
 }
 
 void
@@ -253,17 +262,23 @@ rampg_update(rampg_t *ramp, float dt)
                 return ramp->value;
         }
 
-        float rate =
-            (target >= ramp->value) ? ramp->rise_rate : ramp->fall_rate;
+        /*
+         * Rate and acceleration are both selected by the direction of the
+         * move, so a slow controlled rise and a fast trip down can each keep
+         * their own shape.
+         */
+        bool rising = (target >= ramp->value);
+        float rate = rising ? ramp->rise_rate : ramp->fall_rate;
         if (!(rate > 0.0f)) {
                 return ramp->value;
         }
 
         if (ramp->shape == RAMPG_SHAPE_SCURVE) {
-                if (!(ramp->accel > 0.0f)) {
+                float accel = rising ? ramp->rise_accel : ramp->fall_accel;
+                if (!(accel > 0.0f)) {
                         return ramp->value;
                 }
-                ramp->value = scurve_step(ramp, target, rate, dt);
+                ramp->value = scurve_step(ramp, target, rate, accel, dt);
         } else {
                 ramp->value = linear_step(ramp, target, rate, dt);
         }

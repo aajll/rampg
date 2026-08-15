@@ -19,6 +19,8 @@ Two limits shape the move:
 - `rampg_set_rate` (or `rampg_set_rates`) sets the **rate limit**, the greatest speed the output may travel at. It means the same thing in both profiles.
 - `rampg_set_accel` sets the **acceleration limit**, the greatest amount the output rate may change per second. It applies only to the S-curve profile.
 
+Both limits can be set per direction, with `rampg_set_rates` and `rampg_set_accels`. The pair for the direction of the move governs it throughout, including through a reversal, so the two legs never compromise each other.
+
 ```c
 #include "rampg.h"
 
@@ -38,10 +40,24 @@ while (!rampg_at_target(&vbus)) {
 }
 ```
 
-For asymmetric rise and fall, use `rampg_set_rates`. The acceleration limit stays symmetric:
+### Asymmetric legs
+
+A rise and a fall often have different jobs. A DC bus is eased up under control and tripped down on a fault; a drive is accelerated gently and stopped hard. Setting only the rates asymmetrically is not enough, because a single acceleration limit then has to serve both: pick one gentle enough for the rise and the trip takes seconds, pick one fast enough for the trip and the rise steps rather than eases.
+
+Setting both per direction resolves it. For a 400 V bus at 50 V/s up and 2000 V/s down:
+
+| Configuration | rise 0 to 400 | trip 400 to 0 |
+| --- | --- | --- |
+| symmetric `accel` 100 | 8.50 s | 4.00 s |
+| symmetric `accel` 20000 | 8.00 s | 0.30 s |
+| `accels(100, 40000)` | 8.50 s | 0.25 s |
+| linear reference | 8.00 s | 0.20 s |
+
+The first row cannot trip, the second cannot ease, and the third does both.
 
 ```c
-rampg_set_rates(&vbus, 50.0f, 400.0f);   /* 50 V/s up, 400 V/s down */
+rampg_set_rates(&vbus, 50.0f, 2000.0f);      /* 50 V/s up, 2 kV/s down    */
+rampg_set_accels(&vbus, 100.0f, 40000.0f);   /* eased up, tripped hard    */
 ```
 
 The defaults can also be set at compile time, before including `rampg.h`:
@@ -51,6 +67,8 @@ The defaults can also be set at compile time, before including `rampg.h`:
 #define RAMPG_DEFAULT_ACCEL 500.0f
 #include "rampg.h"
 ```
+
+`RAMPG_DEFAULT_ACCEL` sets both directions at initialisation.
 
 ### How long a move takes
 
@@ -71,6 +89,8 @@ The changeover is at `d = r^2 / a`.
 ## How it is computed
 
 The generator carries two pieces of state between updates: the output `value` and the output rate `vel`. There is no plan and no move clock. Each update does three things.
+
+The rate limit and the acceleration limit are both chosen by the direction of the move, so `rate` and `accel` below mean the pair for that direction.
 
 **1. Approach the cruise rate.** The rate moves toward the rate limit, in the direction of the target, by no more than one acceleration step:
 
@@ -164,7 +184,7 @@ A 0 to 100 move at a 100 unit/s rate limit and a 200 unit/s² acceleration limit
 ![S-curve retarget, reversal and asymmetric rise/fall](images/scurve_retarget_and_asymmetric.png)
 
 - **(A) Retarget and reversal.** The move starts toward 100. At 0.5 s the target moves to 160, and at 1.2 s it moves to -40, behind the current value. The rate trace is continuous throughout: it holds at the rate limit through the retarget, then walks down through zero at the acceleration limit and back up to the limit in the opposite direction. Nothing restarts, and nothing steps.
-- **(B) Asymmetric rise and fall.** A 0 to 200 move at 50 unit/s up and 150 unit/s down. Each leg cruises at its own limit and both use the same acceleration limit, so the down leg is three times as fast but eases in and out over the same time.
+- **(B) Asymmetric rise and fall.** A 0 to 200 move at 50 unit/s up and 150 unit/s down, with 100 unit/s² up and 600 unit/s² down. Each leg cruises at its own rate limit and eases at its own acceleration limit, so the down leg is both faster and sharper. The corners of the two rate traces have visibly different slopes, which is the acceleration limit for each direction.
 
 ## Notes and limitations
 

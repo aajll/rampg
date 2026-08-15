@@ -9,7 +9,7 @@ A lightweight, unit-agnostic ramp generator with linear and acceleration-limited
 - **Linear ramping** between a current value and a configurable target at a caller-specified rate
 - **S-curve profile** via `rampg_set_shape`, bounding both the output rate and how fast that rate may change, so the output eases in and out of a move
 - **Safe under a live setpoint**: the output rate is carried across a target, rate, limit, or shape change, so a ramp driven from a closed loop never restarts or stalls
-- **Asymmetric rates** with independent rise and fall settings via `rampg_set_rates`
+- **Asymmetric rates and accelerations** with independent rise and fall settings via `rampg_set_rates` and `rampg_set_accels`, so a slow controlled rise can be paired with a fast trip down
 - **Runtime introspection** with `rampg_get_rate` (signed output rate, units/s) and `rampg_get_state` (moving, at-target, or disabled)
 - **Enable / disable** with `rampg_set_enabled` and `rampg_is_enabled` to hold the output at its current value and resume on demand
 - **Output clamping** to caller-supplied minimum and maximum limits, applied on every update
@@ -118,7 +118,14 @@ rampg_set_limits(&vbus, 0.0f, 800.0f);
 rampg_set_target(&vbus, 400.0f);
 ```
 
-A move long enough to reach the rate limit takes `rate / accel` seconds longer than the equivalent linear move. For the design, the derivation, the guaranteed properties, and generated graphs, see the [S-curve profile documentation](docs/s-curve-profile.md).
+A move long enough to reach the rate limit takes `rate / accel` seconds longer than the equivalent linear move.
+
+Both limits can be set per direction, which matters when the two legs have different jobs. A precharge eased up over 8.5 s can still be tripped down in 0.25 s:
+
+```c
+rampg_set_rates(&vbus, 50.0f, 2000.0f);      /* slow up, fast trip down   */
+rampg_set_accels(&vbus, 100.0f, 40000.0f);   /* eased up, tripped hard    */
+``` For the design, the derivation, the guaranteed properties, and generated graphs, see the [S-curve profile documentation](docs/s-curve-profile.md).
 
 ### Driving from a closed loop
 
@@ -179,11 +186,12 @@ void rampg_set_target(rampg_t *ramp, float target);
 void rampg_set_rate(rampg_t *ramp, float rate);
 void rampg_set_rates(rampg_t *ramp, float rise_rate, float fall_rate);
 void rampg_set_accel(rampg_t *ramp, float accel);
+void rampg_set_accels(rampg_t *ramp, float rise_accel, float fall_accel);
 void rampg_set_limits(rampg_t *ramp, float min, float max);
 void rampg_set_shape(rampg_t *ramp, rampg_shape_t shape);
 ```
 
-`rampg_set_rate` applies the same rate to both directions. `rampg_set_rates` configures them independently. `rampg_set_accel` sets the acceleration limit used by the S-curve profile and is ignored by the linear profile. `rampg_set_limits` clamps the current value to the new range immediately, and resets the output rate if that clamp displaces the value. `rampg_set_shape` selects the ramp profile. The stored target is not modified, so widening the limits later recovers the original intent.
+`rampg_set_rate` applies the same rate to both directions. `rampg_set_rates` configures them independently. `rampg_set_accel` sets the acceleration limit used by the S-curve profile, and `rampg_set_accels` configures the two directions independently. Like the rate, the limit is selected by the direction of the move, so a slow controlled rise can be paired with a fast trip down. Both are ignored by the linear profile. `rampg_set_limits` clamps the current value to the new range immediately, and resets the output rate if that clamp displaces the value. `rampg_set_shape` selects the ramp profile. The stored target is not modified, so widening the limits later recovers the original intent.
 
 ### Runtime
 
@@ -219,7 +227,8 @@ typedef struct {
         float target;        /* Stored target (unclamped) */
         float rise_rate;     /* Rise rate, units/s */
         float fall_rate;     /* Fall rate, units/s */
-        float accel;         /* Acceleration limit, units/s^2 */
+        float rise_accel;    /* Rise acceleration limit, units/s^2 */
+        float fall_accel;    /* Fall acceleration limit, units/s^2 */
         float limit_min;     /* Output clamp minimum */
         float limit_max;     /* Output clamp maximum */
         float vel;           /* Internal: current output rate */
@@ -237,7 +246,7 @@ Every field except `vel` is caller-facing configuration and may be read directly
 | Macro                 | Default              | Meaning                                                            |
 | --------------------- | -------------------- | ------------------------------------------------------------------ |
 | `RAMPG_DEFAULT_RATE`  | `100.0f`             | Default rise and fall rate set by `rampg_init` (units per second). |
-| `RAMPG_DEFAULT_ACCEL` | `RAMPG_DEFAULT_RATE * 10.0f` | Default acceleration limit set by `rampg_init` (units per second squared). Reaches the default rate in 0.1 s. |
+| `RAMPG_DEFAULT_ACCEL` | `RAMPG_DEFAULT_RATE * 10.0f` | Default rise and fall acceleration limit set by `rampg_init` (units per second squared). Reaches the default rate in 0.1 s. |
 | `RAMPG_LIMIT_MIN`     | `-1000000.0f`        | Default output clamp minimum set by `rampg_init`.                  |
 | `RAMPG_LIMIT_MAX`     | `1000000.0f`         | Default output clamp maximum set by `rampg_init`.                  |
 | `RAMPG_DEFAULT_SHAPE` | `RAMPG_SHAPE_LINEAR` | Default ramp profile set by `rampg_init`.                          |
@@ -263,6 +272,7 @@ The contract for each function is:
 | `rampg_set_rate`   | `ramp` has been initialised. `rate > 0`.                           |
 | `rampg_set_rates`  | `ramp` has been initialised. `rise_rate > 0` and `fall_rate > 0`.  |
 | `rampg_set_accel`  | `ramp` has been initialised. `accel > 0`.                          |
+| `rampg_set_accels` | `ramp` has been initialised. `rise_accel > 0` and `fall_accel > 0`. |
 | `rampg_set_limits` | `ramp` has been initialised. `min <= max`.                         |
 | `rampg_set_shape`  | `ramp` has been initialised.                                       |
 | `rampg_update`     | `ramp` has been initialised. `dt > 0`.                             |

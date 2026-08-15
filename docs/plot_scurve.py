@@ -46,7 +46,8 @@ class Ramp(ctypes.Structure):
         ("target", ctypes.c_float),
         ("rise_rate", ctypes.c_float),
         ("fall_rate", ctypes.c_float),
-        ("accel", ctypes.c_float),
+        ("rise_accel", ctypes.c_float),
+        ("fall_accel", ctypes.c_float),
         ("limit_min", ctypes.c_float),
         ("limit_max", ctypes.c_float),
         ("vel", ctypes.c_float),
@@ -95,6 +96,11 @@ def build_library(workdir: pathlib.Path) -> ctypes.CDLL:
         ctypes.c_float,
     ]
     lib.rampg_set_accel.argtypes = [ctypes.POINTER(Ramp), ctypes.c_float]
+    lib.rampg_set_accels.argtypes = [
+        ctypes.POINTER(Ramp),
+        ctypes.c_float,
+        ctypes.c_float,
+    ]
     lib.rampg_set_limits.argtypes = [
         ctypes.POINTER(Ramp),
         ctypes.c_float,
@@ -240,6 +246,7 @@ def figure_online(lib):
     # (B) asymmetric rise and fall.
     asym = make_ramp(lib, SHAPE_SCURVE, rate, accel)
     lib.rampg_set_rates(ctypes.byref(asym), 50.0, 150.0)
+    lib.rampg_set_accels(ctypes.byref(asym), 100.0, 600.0)
 
     def schedule_b(tick):
         if tick == 0:
@@ -282,7 +289,9 @@ def figure_online(lib):
     axes[0][1].plot(bt, bv, color=ORANGE, lw=1.8)
     style_axis(axes[0][1], "output value")
     axes[0][1].set_title(
-        "(B) asymmetric rates: 50 unit/s up, 150 unit/s down", fontsize=10
+        "(B) asymmetric legs: 50 unit/s at 100 unit/s² up,\n"
+        "150 unit/s at 600 unit/s² down",
+        fontsize=10,
     )
 
     axes[1][1].plot(bt, br, color=ORANGE, lw=1.8)
