@@ -4,7 +4,7 @@
  * @file: rampg.c
  *
  * @brief
- *    Implementation of rampg — a linear ramp generator.
+ *    Implementation of rampg, a linear and S-curve (sigmoid) ramp generator.
  */
 
 /* ================ INCLUDES ================================================ */
@@ -87,40 +87,50 @@ rampg_init(rampg_t *ramp, float initial)
 void
 rampg_set_target(rampg_t *ramp, float target)
 {
+        if (target != ramp->target) {
+                ramp->plan_valid = false;
+        }
         ramp->target = target;
-        ramp->plan_valid = false;
 }
 
 void
 rampg_set_rate(rampg_t *ramp, float rate)
 {
+        if ((ramp->rise_rate != rate) || (ramp->fall_rate != rate)) {
+                ramp->plan_valid = false;
+        }
         ramp->rise_rate = rate;
         ramp->fall_rate = rate;
-        ramp->plan_valid = false;
 }
 
 void
 rampg_set_rates(rampg_t *ramp, float rise_rate, float fall_rate)
 {
+        if ((ramp->rise_rate != rise_rate) || (ramp->fall_rate != fall_rate)) {
+                ramp->plan_valid = false;
+        }
         ramp->rise_rate = rise_rate;
         ramp->fall_rate = fall_rate;
-        ramp->plan_valid = false;
 }
 
 void
 rampg_set_limits(rampg_t *ramp, float min, float max)
 {
+        if ((ramp->limit_min != min) || (ramp->limit_max != max)) {
+                ramp->plan_valid = false;
+        }
         ramp->limit_min = min;
         ramp->limit_max = max;
         ramp->value = clamp(ramp->value, min, max);
-        ramp->plan_valid = false;
 }
 
 void
 rampg_set_shape(rampg_t *ramp, rampg_shape_t shape)
 {
+        if (ramp->shape != shape) {
+                ramp->plan_valid = false;
+        }
         ramp->shape = shape;
-        ramp->plan_valid = false;
 }
 
 float

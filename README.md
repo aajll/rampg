@@ -183,6 +183,7 @@ typedef struct {
         float move_elapsed;  /* Elapsed move time in seconds */
         bool plan_valid;     /* True when the planned move is current */
 } rampg_t;
+```
 
 `rampg_t` is a plain aggregate with no pointers. It is safe to `memcpy`, embed in a larger struct, or place in shared memory provided the usual thread-safety caveats are respected.
 

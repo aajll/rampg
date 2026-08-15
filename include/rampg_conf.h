@@ -48,7 +48,7 @@
 #ifndef RAMPG_DEFAULT_SHAPE
 /**
  * @def RAMPG_DEFAULT_SHAPE
- * @brief Default ramp shape at initialization.
+ * @brief Default ramp shape at initialisation.
  *
  * One of the rampg_shape_t values: RAMPG_SHAPE_LINEAR (constant-rate
  * step) or RAMPG_SHAPE_SIGMOID (quintic S-curve at the same peak rate).
