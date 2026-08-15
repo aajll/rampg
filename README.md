@@ -112,6 +112,8 @@ rampg_set_shape(&vbus, RAMPG_SHAPE_SIGMOID);
 rampg_set_target(&vbus, 400.0f);
 ```
 
+For the design, peak-rate sizing, re-planning behaviour, and generated graphs, see the [S-curve profile documentation](docs/s-curve-profile.md).
+
 ## Building
 
 ```sh
