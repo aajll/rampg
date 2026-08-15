@@ -1,107 +1,34 @@
-# S-curve (sigmoid) ramp profile
+# S-curve ramp profile
 
-The `rampg` library ships two ramp profiles. The default, `RAMPG_SHAPE_LINEAR`, moves at a constant rate from the current value to the target. The S-curve profile, `RAMPG_SHAPE_SIGMOID`, moves along a smooth quintic that starts and ends at zero velocity, so the output eases in and out instead of stepping in and out. This document explains the S-curve profile: what it buys you, how it is configured, how it is computed, and what the generated graphs show.
+The `rampg` library ships two ramp profiles. The default, `RAMPG_SHAPE_LINEAR`, moves at a constant rate from the current value to the target. The S-curve profile, `RAMPG_SHAPE_SCURVE`, bounds how fast the output rate itself may change, so the output eases in and out of a move instead of stepping in and out. This document explains the S-curve profile: what it buys you, how it is configured, how it is computed, and what the generated graphs show.
 
-The rest of the public API (targets, limits, resets, `rampg_update`, and enable/disable) behaves exactly the same in both profiles. See the README for the full API reference.
+The rest of the public API (targets, limits, resets, `rampg_update`, and enable/disable) behaves the same in both profiles. See the README for the full API reference.
 
 ## Why an S-curve
 
-A linear step has a hard change in velocity at both ends. The rate jumps from zero to `rate` at the start of the move, and from `rate` back to zero at the end. For a physical actuator (a motor, a valve, a power supply) those two jumps are impulsive: they show up as a jerk that can excite mechanical resonance, spin up inductors, or trip a soft limit.
+A linear step has a hard change in rate at both ends. The rate jumps from zero to `rate` at the start of the move, and from `rate` back to zero at the end. For a physical actuator (a motor, a valve, a power supply) those two jumps are impulsive: they show up as a jerk that can excite mechanical resonance, spin up inductors, or trip a soft limit.
 
-The S-curve removes those velocity steps. The rate starts at zero, ramps up to the configured peak, holds near that peak through the middle of the move, and ramps back down to zero. The output is still bounded by the same configured rate, but it is never applied abruptly.
+The S-curve removes those steps. The rate starts at zero, rises to the configured peak, holds there through the middle of the move, and falls back to zero. The output is still bounded by the configured rate, and now the *change* in that rate is bounded too, by the configured acceleration.
 
-The cost is time. Because the rate is only at its peak for part of the move, an S-curve takes **1.875× as long** as a linear step that covers the same distance at the same peak rate. For a 0 to 100 move at 100 units/s, the linear step finishes in about 1.0 s and the S-curve finishes in about 1.875 s. Use the S-curve where the smoother transition matters; use the linear profile where the move must be as fast as possible.
+The cost is time. A move long enough to reach the configured rate takes `rate / accel` seconds longer than the equivalent linear move: the ramp spends half that time easing in and half easing out. That is a fixed overhead set by the two limits, not a multiple of the move length.
 
-## How it is computed
+## Configuration
 
-The move follows a normalized quintic S-curve. Let `start` and `end` be the value at the beginning and end of the move, and let `u` run from 0 to 1 over the move duration. The output is
+Two limits shape the move:
 
-```
-value = start + (end - start) * s(u)
-```
-
-where `s` is the standard quintic smoothstep. This particular polynomial has three properties that make it a good ramp:
-
-- `s(0) = 0` and `s(1) = 1`, so the output reaches the target exactly.
-- The first derivative is zero at both `u = 0` and `u = 1`. The output therefore starts and ends at **zero velocity**.
-- The second derivative is also zero at both ends. The output starts and ends at **zero acceleration**, so the rate itself changes smoothly rather than kinking.
-
-### Deriving the quintic
-
-The goal is one polynomial that carries a move from 0 to 1 over the unit interval $u \in [0, 1]$ while keeping the motion smooth at both ends. The requirements on $s(u)$ are:
-
-- $s(0) = 0$ and $s(1) = 1$: the move starts at the beginning and ends at the end.
-- $s'(0) = 0$ and $s'(1) = 0$: the move starts and ends at zero velocity, removing the velocity step of the linear profile.
-
-Four conditions determine a cubic, and solving them gives the familiar smoothstep $s(u) = 3u^2 - 2u^3$. That curve is $C^1$, but $s''(0) = 6$ and $s''(1) = -6$, so the acceleration jumps from zero to a finite value at each end and the rate has a kink at the boundary.
-
-To keep the acceleration continuous as well, two more conditions are added: $s''(0) = 0$ and $s''(1) = 0$. Six conditions determine a quintic, $s(u) = au^5 + bu^4 + cu^3 + du^2 + eu + f$:
-
-$$
-\begin{aligned}
-s(0) = 0 &\Rightarrow f = 0 \\
-s'(0) = 0 &\Rightarrow e = 0 \\
-s''(0) = 0 &\Rightarrow 2d = 0 \\
-s''(1) = 0 &\Rightarrow 20a + 12b + 6c = 0 \\
-s'(1) = 0 &\Rightarrow 5a + 4b + 3c = 0 \\
-s(1) = 1 &\Rightarrow a + b + c = 1
-\end{aligned}
-$$
-
-Solving gives $a = 6$, $b = -15$, $c = 10$, and
-
-$$
-s(u) = 6u^5 - 15u^4 + 10u^3
-$$
-
-which is exactly the polynomial evaluated in `sigmoid_s`. Its first derivative factors as
-
-$$
-s'(u) = 30u^4 - 60u^3 + 30u^2 = 30u^2(1 - u)^2
-$$
-
-and its second derivative, $s''(u) = 60u(1-u)(1-2u)$, vanishes at both ends, confirming $C^2$ continuity. The first derivative is a product of $u^2$ and $(1-u)^2$, so it is symmetric about $u = 1/2$ and its maximum sits at the midpoint:
-
-$$
-s'(1/2) = 30 \cdot \tfrac{1}{4} \cdot \tfrac{1}{4} = \tfrac{30}{16} = 1.875
-$$
-
-That is the `SIGMOID_PEAK_SLOPE` constant in the source and the origin of the 1.875× time penalty. The implementation evaluates the two halves separately, computing $S(1 - v) = 1 - S(v)$ with the small $v = 1 - u$ when $u > 0.5$, which avoids the catastrophic cancellation the direct polynomial suffers near $u = 1$.
-
-### Peak-rate sizing
-
-The peak slope of the quintic is exactly `1.875` (at `u = 0.5`). To make the move's peak rate equal the configured rate, the move duration is set to
-
-```
-duration = 1.875 * distance / rate
-```
-
-so that `distance * 1.875 / duration == rate`. In other words, the configured rate is the **peak rate**, which is the same meaning it has in the linear profile. Two practical consequences:
-
-- The average rate over the move is `distance / duration = rate / 1.875`, about 53% of the peak rate.
-- The move takes `1.875 * distance / rate`, which is 1.875× the linear step time for the same distance and peak rate.
-
-### Direction and asymmetric rates
-
-The direction is decided by the sign of `end - start`. A rising move uses `rise_rate`, a falling move uses `fall_rate`. Setting these independently with `rampg_set_rates` gives an asymmetric S-curve, for example a slow controlled rise paired with a fast trip-down. The duration of each leg scales as `1/rate`, so the faster leg is shorter.
-
-### Re-planning
-
-The move is re-planned from the current value whenever the effective target, the limits, or the rates change. A re-plan resets the move clock to zero and keeps the output at its current value. The result is that a mid-move retarget or a rate change never introduces a jump: the output stays continuous and restarts at zero velocity toward the new goal. The same holds when switching to the SIGMOID profile; a switch to LINEAR resumes at full rate instead. This is the behaviour shown in the second graph, panel (A).
-
-## Configuring it
-
-Select the profile with `rampg_set_shape`. The default is linear, so a sigmoid move requires an explicit call. The configured rate is the peak rate.
+- `rampg_set_rate` (or `rampg_set_rates`) sets the **rate limit**, the greatest speed the output may travel at. It means the same thing in both profiles.
+- `rampg_set_accel` sets the **acceleration limit**, the greatest amount the output rate may change per second. It applies only to the S-curve profile.
 
 ```c
 #include "rampg.h"
 
-/* Ease a setpoint from 0 to 400 V with a 50 V/s peak rate. */
+/* Ease a setpoint from 0 to 400 V, at most 50 V/s and at most 200 V/s^2. */
 rampg_t vbus;
 rampg_init(&vbus, 0.0f);
-rampg_set_rate(&vbus, 50.0f);            /* 50 V/s peak */
+rampg_set_shape(&vbus, RAMPG_SHAPE_SCURVE);
+rampg_set_rate(&vbus, 50.0f);
+rampg_set_accel(&vbus, 200.0f);
 rampg_set_limits(&vbus, 0.0f, 800.0f);
-rampg_set_shape(&vbus, RAMPG_SHAPE_SIGMOID);
 rampg_set_target(&vbus, 400.0f);
 
 /* From the control loop, as usual. */
@@ -111,57 +38,136 @@ while (!rampg_at_target(&vbus)) {
 }
 ```
 
-For asymmetric rise and fall, use `rampg_set_rates` instead of `rampg_set_rate`. The rise leg uses the first argument as its peak rate and the fall leg uses the second:
+For asymmetric rise and fall, use `rampg_set_rates`. The acceleration limit stays symmetric:
 
 ```c
 rampg_set_rates(&vbus, 50.0f, 400.0f);   /* 50 V/s up, 400 V/s down */
 ```
 
-The default profile can also be set at compile time. Define `RAMPG_DEFAULT_SHAPE` before including `rampg.h`:
+The defaults can also be set at compile time, before including `rampg.h`:
 
 ```c
-#define RAMPG_DEFAULT_SHAPE RAMPG_SHAPE_SIGMOID
+#define RAMPG_DEFAULT_SHAPE RAMPG_SHAPE_SCURVE
+#define RAMPG_DEFAULT_ACCEL 500.0f
 #include "rampg.h"
 ```
 
-`rampg_set_shape` takes effect at the next `rampg_update`. If a move is in progress, it is re-planned from the current value, so switching profiles mid-move is also continuous.
+### How long a move takes
+
+Let `d` be the distance, `r` the rate limit and `a` the acceleration limit. If the move is long enough for the ramp to reach `r`, the rate profile is a trapezoid and the move takes
+
+```
+t = d / r + r / a
+```
+
+If it is not, the ramp reaches only `sqrt(a * d)` before it must start braking. The rate profile is then a triangle and the move takes
+
+```
+t = 2 * sqrt(d / a)
+```
+
+The changeover is at `d = r^2 / a`.
+
+## How it is computed
+
+The generator carries two pieces of state between updates: the output `value` and the output rate `vel`. There is no plan and no move clock. Each update does three things.
+
+**1. Approach the cruise rate.** The rate moves toward the rate limit, in the direction of the target, by no more than one acceleration step:
+
+```
+want = copysign(rate_limit, target - value)
+vel += clamp(want - vel, -accel * dt, +accel * dt)
+```
+
+**2. Stay inside the braking envelope.** The rate is then clamped to the greatest speed from which the ramp can still stop exactly on the target without ever exceeding the acceleration limit:
+
+```
+vel = clamp(vel, -vb, +vb)
+```
+
+**3. Advance the output.** `value += vel * dt`, snapping to the target if that step reaches or passes it.
+
+### Deriving the braking envelope
+
+The update applies the new rate to the value within the same tick. So if the ramp is travelling at `v` and decelerates at `a` from here on, the value advances by `v`, then `v - a*dt`, then `v - 2*a*dt`, and so on, down to zero. Over the `n = v / (a*dt)` steps that takes, the distance covered is
+
+$$
+d(v) = dt \sum_{k=0}^{n} (v - k\,a\,dt) = \frac{v^2}{2a} + \frac{v\,dt}{2}
+$$
+
+The envelope is the inverse: the greatest `v` whose stopping distance still fits in the distance remaining. Solving $v^2 + a\,dt\,v - 2ad = 0$ for the positive root, and rationalising it to avoid the cancellation the direct root suffers as `d` approaches zero, gives
+
+$$
+v_b(d) = \frac{-a\,dt + \sqrt{(a\,dt)^2 + 8ad}}{2} = \frac{4ad}{a\,dt + \sqrt{(a\,dt)^2 + 8ad}}
+$$
+
+The denominator of the rationalised form is at least `2 * a * dt`, so the expression is well defined for any `a > 0` and `dt > 0` and needs no special case at `d = 0`.
+
+### Why the envelope is a clamp and not a target
+
+It is tempting to make `v_b` the rate the ramp aims for, and let the acceleration limiter walk toward it. That formulation is unstable, and the instability is easy to miss because it only shows up at the end of a move.
+
+Write the tracking error as `e = v - v_b`. Because `v_b` falls with the remaining distance, and the distance falls in proportion to the current speed, the error obeys
+
+$$
+\frac{de}{d\,\text{step}} \approx \frac{a\,dt\,e}{v_b}
+$$
+
+which grows without bound as `v_b` falls to zero. A limiter that is exactly critical cannot recover from any error, and float rounding alone is enough to introduce one. Measured over a randomised sweep, that lag left the ramp arriving at the target at up to 432 times one acceleration step instead of coming to rest on it.
+
+Clamping instead of tracking removes the feedback entirely. The state is always on or inside the envelope, so there is no error to accumulate, and the envelope is only ever consulted to reduce the rate.
+
+### Landing
+
+A move ends in one of two ways. Normally the step reaches or passes the target and the ramp snaps to it, which is what makes `rampg_at_target` exact. Because the envelope has already brought the rate down, the rate at that last update is small: without a late retarget it is at most about twice one acceleration step.
+
+The second case is a numerical one. `value` is a `float`, so once the step falls below the resolution of the accumulator the value stops changing however many updates pass. When that happens and the envelope is the constraint binding the rate, the rate can only fall further and the target can never be reached by accumulation, so the ramp lands on it. When some other limit is binding, the rate is still rising and will clear the resolution floor, so the ramp holds and carries on. Without that distinction a ramp either stalls just short of its target or, worse, jumps the whole remaining distance at the start of a move that begins from a large value.
+
+### Guaranteed properties
+
+For any `rate > 0`, `accel > 0` and `dt > 0`, and whatever the caller does to the target, rates, limits, or shape between updates:
+
+- The output rate never exceeds the configured rate limit for its direction.
+- The output rate changes by at most `accel * dt` per update. The bound is exact in real arithmetic; in `float` the envelope clamp can round slightly past it, measured at no more than 1.2 times `accel * dt` over a randomised sweep of twenty thousand moves. On the update that arrives at the target the rate falls to zero from at most about twice `accel * dt`.
+- The output never overshoots the effective target, and never leaves the limits.
+- The output rate is continuous across a target change, a rate change, an acceleration change, and a switch from the linear profile.
+- The output arrives exactly on the effective target, so `rampg_at_target` becomes true.
+
+There is one documented exception to the acceleration bound. If the target is moved to a point *inside* the current braking distance, no bounded deceleration can stop there. The generator prioritises not overshooting the target: it decelerates as hard as the envelope demands and stops on the target. If your application would rather overshoot and come back than exceed the acceleration limit, keep the target outside the braking distance `vel^2 / (2 * accel)`, which `rampg_get_rate` gives you everything to compute.
 
 ## Reading the rate and state
 
-Two read-only getters expose live progress without advancing the ramp: `rampg_get_rate` and `rampg_get_state`.
+`rampg_get_rate` returns the signed output rate in units per second. Under the S-curve profile it is the rate the last `rampg_update` actually applied, so it is exact rather than inferred. It stays correct across a target, rate, limit, or shape change, because the rate is carried across the change rather than being recomputed, which makes it usable directly as a feedforward term.
 
-`rampg_get_rate` returns the **effective rate** in units per second. For a sigmoid move this is the instantaneous slope of the planned S-curve, so it reads zero before the first `rampg_update` (the plan does not exist yet), rises to the configured peak at the midpoint of the move, and falls back to zero at the end. A target, limit, rate, or shape change invalidates the plan, so the rate reads zero again until the next `rampg_update` re-plans from the current value. This is the same quantity that appears in the rate panels of the graphs below.
-
-`rampg_get_state` returns `RAMPG_STATE_MOVING` while the output is ramping and `RAMPG_STATE_AT_TARGET` when the output is at rest at the **effective target** (the stored target clamped to the active limits). `rampg_at_target` is the boolean form of `RAMPG_STATE_AT_TARGET`. Because the state resolves against the clamped target, a target that lies outside the limits is treated as reachable at the clamped value: the ramp moves to the clamped value, then reports at-target with a zero rate. There is no separate "unreachable" state.
+`rampg_get_state` returns `RAMPG_STATE_DISABLED` whenever the ramp is disabled, and otherwise `RAMPG_STATE_MOVING` or `RAMPG_STATE_AT_TARGET` against the **effective target** (the stored target clamped to the active limits). `rampg_at_target` is purely positional and ignores the enabled flag, so use `rampg_get_state` when you need to tell a held ramp from a moving one. Because the state resolves against the clamped target, a target outside the limits is treated as reachable at the clamped value: the ramp moves there, then reports at-target with a zero rate. There is no separate "unreachable" state.
 
 ## Enabling and disabling
 
-A ramp can be paused with `rampg_set_enabled` and resumed on demand. A disabled ramp holds its output: `rampg_update` returns the value unchanged and `rampg_get_rate` reads zero. The target, rates, limits, and shape are preserved, so re-enabling resumes the move from the current value. In a SIGMOID move the in-progress plan is kept, so the output continues the same S-curve where it left off instead of re-planning from a flat start.
-
-`rampg_at_target` and `rampg_get_state` ignore the flag. A disabled ramp mid-move still reports `RAMPG_STATE_MOVING`, and one at rest reports `RAMPG_STATE_AT_TARGET`. A ramp is enabled by default after `rampg_init`, and `rampg_reset` does not change the flag.
+A ramp can be paused with `rampg_set_enabled` and resumed on demand. A disabled ramp holds its output: `rampg_update` returns the value unchanged and `rampg_get_rate` reads zero. Disabling also clears the stored rate, because a held output is genuinely at rest; re-enabling therefore eases away from rest rather than resuming at a rate the output no longer has. The target, rates, acceleration, limits, and shape are all preserved.
 
 ## Reading the graphs
 
-The graphs below were generated by driving the real library and sampling the output at a fixed 4 ms step, so they show the actual behaviour rather than a re-derivation of it. The S-curve traces are in violet and the linear or reference traces are in blue and orange.
+The graphs below are generated by `docs/plot_scurve.py`, which compiles the library and drives it through `ctypes`, so they show the actual behaviour rather than a re-derivation of it. Regenerate them with `python docs/plot_scurve.py`.
 
-### Value and rate profiles
+### Value, rate and acceleration
 
-![S-curve and linear value and rate profiles](images/scurve_profiles_and_rates.png)
+![Linear and S-curve value, rate and acceleration profiles](images/scurve_profiles_and_rates.png)
 
-Both panels compare a 0 to 100 move at a 100 units/s peak rate.
+A 0 to 100 move at a 100 unit/s rate limit and a 200 unit/s² acceleration limit, sampled at 2 ms.
 
-- **Value profile** (top). The blue linear step is a straight line that reaches 100 in about 1.0 s. The violet S-curve is flat near 0, rises through 50 at the midpoint, and is flat again as it settles at 100. It finishes in about 1.875 s, the 1.875× time penalty.
-- **Rate profile** (bottom). The blue line is flat at the configured 100 units/s for the whole move, with sharp corners at the start and end. The violet rate is zero at both ends, climbs to the same 100 units/s peak in the middle, and returns to zero. The two curves have the same peak, which is the point of the sizing.
+- **Value** (top). The blue linear trace is a straight line reaching 100 at 1.0 s. The violet S-curve eases away from 0, runs straight through the middle, and eases into 100 at 1.5 s. The extra 0.5 s is `rate / accel`.
+- **Rate** (middle). The linear trace is a rectangle: full rate immediately, zero immediately. The S-curve trace is a trapezoid that reaches the same 100 unit/s peak. Both are bounded by the same rate limit, which is the point of keeping that limit's meaning unchanged between profiles.
+- **Acceleration** (bottom). The S-curve trace sits on ±200 while easing and at zero while cruising. The linear trace has no bound at all: its steps at both ends run off the scale. The small violet step at the end is the arrival, bounded at about twice one acceleration step.
 
-### Mid-move retarget and asymmetric rates
+### Retarget, reversal and asymmetric rates
 
-![S-curve mid-move retarget and asymmetric rise/fall](images/scurve_retarget_and_asymmetric.png)
+![S-curve retarget, reversal and asymmetric rise/fall](images/scurve_retarget_and_asymmetric.png)
 
-- **(A) Mid-move retarget.** The move starts toward a target of 100. At `t = 0.252 s`, with the output at about 1.96, the target is changed to 50. The violet trace does not jump. It re-plans from the current value and restarts at zero velocity toward the new target of 50.
-- **(B) Asymmetric rise/fall.** The rise from 0 to 100 runs at 200 units/s and takes about 0.9375 s. The fall from 100 to 0 runs at 400 units/s, twice as fast, and takes about 0.46875 s, half as long. Duration scales as `1/rate`.
+- **(A) Retarget and reversal.** The move starts toward 100. At 0.5 s the target moves to 160, and at 1.2 s it moves to -40, behind the current value. The rate trace is continuous throughout: it holds at the rate limit through the retarget, then walks down through zero at the acceleration limit and back up to the limit in the opposite direction. Nothing restarts, and nothing steps.
+- **(B) Asymmetric rise and fall.** A 0 to 200 move at 50 unit/s up and 150 unit/s down. Each leg cruises at its own limit and both use the same acceleration limit, so the down leg is three times as fast but eases in and out over the same time.
 
 ## Notes and limitations
 
-- The profile is a quintic, so the output is continuous in value, velocity, and acceleration at the move boundaries. Jerk is finite but discontinuous at the boundary between the flat region and the curve. This is the standard trade-off for a fifth-order polynomial. A higher-order or piecewise profile would reduce the jerk step, but rampg deliberately ships a single fixed profile for a bounded, predictable cost.
-- The configured rate is the peak rate. The move's average rate is lower, about 53% of the peak, and the move takes 1.875× the linear step time for the same distance.
-- The move is re-planned on target, limit, or rate changes. The output stays continuous, but the in-progress shape is discarded and a fresh S-curve starts from the current value.
+- Acceleration is bounded but piecewise constant, so it steps between zero and ±`accel` at the corners of the profile. The output is continuous in value and rate but not in acceleration, and jerk is therefore unbounded. Jerk limiting is deliberately out of scope: it would need a third limit, a larger state, and a much more involved solver, for a bounded improvement over a profile that already protects the actuator from the rate steps that matter.
+- The S-curve path evaluates one square root per update. On a target without hardware support for it, that is the dominant cost of the call. The linear path is unaffected.
+- The output accumulates in a `float`. If the per-update step falls below the resolution of the current value, the ramp cannot make progress by accumulation; see the landing section above for how that is handled, and prefer keeping the ratio of value magnitude to per-update step within about `1e6`.

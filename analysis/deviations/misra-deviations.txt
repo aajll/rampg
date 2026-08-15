@@ -26,3 +26,14 @@ misra-c2012-15.5
 # TU within a given consumer build. Single-TU reference counts reflect
 # library usage, not accidental linkage.
 misra-c2012-8.7
+#
+# Rule 7.3 (required), "The lowercase character l shall not be used in a
+# literal suffix": tool false positive, not a deviation. Every reported
+# location is an occurrence of the identifier `accel`, whose trailing letter
+# the checker treats as a literal suffix. There is no integer or floating
+# literal at any of the reported columns, and renaming the identifier to one
+# not ending in that letter clears every finding while changing nothing else.
+# The code is compliant; suppressed narrowly to the one file that names the
+# identifier. Re-check whether this is still needed when cppcheck is next
+# upgraded.
+misra-c2012-7.3:src/rampg.c

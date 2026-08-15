@@ -5,7 +5,7 @@
 ## 1) Project-specific instructions
 
 **Project:** `rampg`
-**Primary goal:** A lightweight, unit-agnostic linear ramp generator with asymmetric rise/fall rates and output clamping, designed for deterministic embedded control loops in C11.
+**Primary goal:** A lightweight, unit-agnostic ramp generator with linear and acceleration-limited S-curve profiles, asymmetric rise/fall rates and output clamping, designed for deterministic embedded control loops in C11.
 
 ### 1.1 Essential commands
 

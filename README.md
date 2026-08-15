@@ -2,26 +2,29 @@
 
 [![CI](https://github.com/aajll/rampg/actions/workflows/ci.yml/badge.svg)](https://github.com/aajll/rampg/actions/workflows/ci.yml)
 
-A lightweight, unit-agnostic ramp generator with linear and S-curve (sigmoid) profiles, asymmetric rise/fall rates, and output clamping, designed for deterministic embedded control loops in C11.
+A lightweight, unit-agnostic ramp generator with linear and acceleration-limited S-curve profiles, asymmetric rise/fall rates, and output clamping, designed for deterministic embedded control loops in C11.
 
 ## Features
 
 - **Linear ramping** between a current value and a configurable target at a caller-specified rate
-- **S-curve (sigmoid) profile** with a flat start and end, sized so the peak rate equals the configured rate, via `rampg_set_shape`
+- **S-curve profile** via `rampg_set_shape`, bounding both the output rate and how fast that rate may change, so the output eases in and out of a move
+- **Safe under a live setpoint**: the output rate is carried across a target, rate, limit, or shape change, so a ramp driven from a closed loop never restarts or stalls
 - **Asymmetric rates** with independent rise and fall settings via `rampg_set_rates`
-- **Runtime introspection** with `rampg_get_rate` (effective rate, units/s) and `rampg_get_state` (moving or at-target)
+- **Runtime introspection** with `rampg_get_rate` (signed output rate, units/s) and `rampg_get_state` (moving, at-target, or disabled)
 - **Enable / disable** with `rampg_set_enabled` and `rampg_is_enabled` to hold the output at its current value and resume on demand
 - **Output clamping** to caller-supplied minimum and maximum limits, applied on every update
 - **Unit-agnostic** plain `float` output. Caller decides the meaning (volts, hertz, amps, RPM, etc.)
 - **Zero allocation** with caller-owned `rampg_t` storage (stack, static, or embedded in a larger struct)
 - **Deterministic** time-step semantics. Caller supplies `dt` in seconds; the library has no internal timers or OS dependencies
 - **Compile-time configuration** of defaults via `rampg_conf.h`, overridable before the public header is included
+- **Total update**: `rampg_update` holds the output rather than corrupting its state when handed a non-finite time step or target, or a non-positive rate or acceleration
 - **No runtime errors** out of the public API. Preconditions are documented via `@pre` annotations
 
 ## Requirements
 
 - A C11-compatible toolchain
 - A conformant `<stdbool.h>` (the public API uses `bool`)
+- A conformant `<math.h>` providing `sqrtf` and `isfinite` (used by the implementation, not the public header)
 - IEEE-754 binary32 `float` (every modern embedded target the library targets uses this)
 
 ## Installation
@@ -103,29 +106,43 @@ rampg_set_target(&vbus, 400.0f);
 
 ### S-curve example
 
-For a smoother transition with a flat start and end, select the sigmoid profile. The configured rate sets the peak rate; the move begins and ends at zero velocity and is re-planned from the current value whenever the target, limits, rates, or shape change.
+For a smoother transition, select the S-curve profile and give it an acceleration limit alongside the rate limit. The rate limit means the same thing in both profiles; the acceleration limit bounds how fast that rate may change, and so sets how sharply the ramp eases in and out.
 
 ```c
 rampg_t vbus;
 rampg_init(&vbus, 0.0f);
-rampg_set_rate(&vbus, 50.0f);          /* 50 V/s peak */
+rampg_set_shape(&vbus, RAMPG_SHAPE_SCURVE);
+rampg_set_rate(&vbus, 50.0f);          /* at most 50 V/s   */
+rampg_set_accel(&vbus, 200.0f);        /* at most 200 V/s^2 */
 rampg_set_limits(&vbus, 0.0f, 800.0f);
-rampg_set_shape(&vbus, RAMPG_SHAPE_SIGMOID);
 rampg_set_target(&vbus, 400.0f);
 ```
 
-For the design, peak-rate sizing, re-planning behaviour, and generated graphs, see the [S-curve profile documentation](docs/s-curve-profile.md).
+A move long enough to reach the rate limit takes `rate / accel` seconds longer than the equivalent linear move. For the design, the derivation, the guaranteed properties, and generated graphs, see the [S-curve profile documentation](docs/s-curve-profile.md).
+
+### Driving from a closed loop
+
+Both profiles accept a target that changes while a move is in progress. Under the S-curve profile the output rate is carried across the change, so the ramp neither steps nor restarts: it simply re-aims from whatever rate it is currently running at, including through a direction reversal.
+
+```c
+for (;;) {
+        rampg_set_target(&vbus, supervisor_setpoint());  /* may change every tick */
+        float v = rampg_update(&vbus, 0.001f);
+        float feedforward = rampg_get_rate(&vbus);       /* exact, and valid now */
+        apply(v, feedforward);
+}
+```
 
 ### Monitoring ramp progress
 
-`rampg_get_rate` and `rampg_get_state` expose live progress without advancing the ramp. In a sigmoid move the rate starts and ends at zero and peaks at the configured rate mid-move, which is useful for dashboards and for validating a move before acting on it.
+`rampg_get_rate` and `rampg_get_state` expose live progress without advancing the ramp.
 
 ```c
 float v = rampg_update(&vbus, 0.001f);
-if (rampg_get_state(&vbus) == RAMPG_STATE_MOVING) {
-        /* ramping at rampg_get_rate(&vbus) units/s */
-} else {
-        /* at rest at the effective target */
+switch (rampg_get_state(&vbus)) {
+case RAMPG_STATE_MOVING:    /* ramping at rampg_get_rate(&vbus) units/s */ break;
+case RAMPG_STATE_AT_TARGET: /* at rest at the effective target          */ break;
+case RAMPG_STATE_DISABLED:  /* held; rampg_get_rate reads zero          */ break;
 }
 ```
 
@@ -161,11 +178,12 @@ void rampg_reset(rampg_t *ramp, float value);
 void rampg_set_target(rampg_t *ramp, float target);
 void rampg_set_rate(rampg_t *ramp, float rate);
 void rampg_set_rates(rampg_t *ramp, float rise_rate, float fall_rate);
+void rampg_set_accel(rampg_t *ramp, float accel);
 void rampg_set_limits(rampg_t *ramp, float min, float max);
 void rampg_set_shape(rampg_t *ramp, rampg_shape_t shape);
 ```
 
-`rampg_set_rate` applies the same rate to both directions. `rampg_set_rates` configures them independently. `rampg_set_limits` clamps the current value to the new range immediately. `rampg_set_shape` selects the ramp profile. The stored target is not modified, so widening the limits later recovers the original intent.
+`rampg_set_rate` applies the same rate to both directions. `rampg_set_rates` configures them independently. `rampg_set_accel` sets the acceleration limit used by the S-curve profile and is ignored by the linear profile. `rampg_set_limits` clamps the current value to the new range immediately, and resets the output rate if that clamp displaces the value. `rampg_set_shape` selects the ramp profile. The stored target is not modified, so widening the limits later recovers the original intent.
 
 ### Runtime
 
@@ -179,13 +197,17 @@ void  rampg_set_enabled(rampg_t *ramp, bool enabled);
 bool  rampg_is_enabled(const rampg_t *ramp);
 ```
 
-`rampg_update` advances the output toward the effective target (the stored target clamped to the active limits) using the configured shape, then re-clamps to the active limits. In LINEAR shape it steps by `rate * dt` and snaps to the effective target when the step would overshoot. In SIGMOID shape it follows a quintic S-curve re-planned from the current value whenever the target, limits, rates, or shape change, sized so the peak rate equals the configured rate. It returns the updated output value.
+`rampg_update` advances the output toward the effective target (the stored target clamped to the active limits) using the configured shape, and never leaves the active limits. In LINEAR shape it steps by `rate * dt` and snaps to the effective target when the step would overshoot. In SCURVE shape it bounds the output rate by the configured rate and the change in that rate by the configured acceleration, easing in and out of the move. It returns the updated output value.
 
-`rampg_at_target` reports whether the output equals the effective target. This uses exact float equality, which is reachable because `rampg_update` explicitly snaps to the effective target when the step would overshoot.
+`rampg_update` is total. Rather than corrupting the ramp state, it holds the output unchanged when `dt` is not a finite value greater than zero, when the effective target is not finite, or when the governing rate (or, under SCURVE, the acceleration) is not greater than zero. The ramp resumes normally on the next update with valid inputs.
 
-`rampg_get_rate` returns the effective rate in units per second (signed). For LINEAR this is the configured rise or fall rate while moving and zero when at rest; for SIGMOID it is the instantaneous slope of the planned S-curve, peaking at the configured rate mid-move. `rampg_get_state` returns `RAMPG_STATE_MOVING` or `RAMPG_STATE_AT_TARGET`, where `rampg_at_target` is the boolean form of `RAMPG_STATE_AT_TARGET`. Both getters evaluate against the effective target (the stored target clamped to the active limits), so a target that lies outside the limits resolves to the clamped value and the ramp reports at-target with a zero rate once it reaches it.
+`rampg_at_target` reports whether the output equals the effective target. This uses exact float equality, which is reachable because `rampg_update` explicitly snaps to the effective target when the step reaches it.
 
-`rampg_set_enabled` and `rampg_is_enabled` gate the ramp. A disabled ramp holds its output: `rampg_update` returns the value unchanged and `rampg_get_rate` reads zero. The target, rates, limits, and shape are preserved, so re-enabling resumes the move from the current value. `rampg_at_target` and `rampg_get_state` ignore the flag, so a disabled ramp mid-move still reports moving and one at rest reports at-target. A ramp is enabled by default after `rampg_init`, and `rampg_reset` does not change the flag.
+`rampg_get_rate` returns the signed output rate in units per second. For LINEAR this is the configured rise or fall rate while moving and zero when at rest. For SCURVE it is the rate the last update applied, carried across a target, rate, limit, or shape change, so it is usable directly as a feedforward term. A disabled ramp reads zero.
+
+`rampg_get_state` returns `RAMPG_STATE_DISABLED` whenever the ramp is disabled, and otherwise `RAMPG_STATE_MOVING` or `RAMPG_STATE_AT_TARGET`. `rampg_at_target` is purely positional and ignores the enabled flag, so a held ramp that has not arrived still reports false there while `rampg_get_state` reports `RAMPG_STATE_DISABLED`. Both evaluate against the effective target, so a target outside the limits resolves to the clamped value and the ramp reports at-target with a zero rate once it reaches it.
+
+`rampg_set_enabled` and `rampg_is_enabled` gate the ramp. A disabled ramp holds its output: `rampg_update` returns the value unchanged and `rampg_get_rate` reads zero. Disabling clears the stored rate, so re-enabling eases away from rest. The target, rates, acceleration, limits, and shape are preserved. A ramp is enabled after `rampg_init`, and `rampg_reset` does not change the flag.
 
 For per-function documentation, see the Doxygen comments in `include/rampg.h`.
 
@@ -197,25 +219,25 @@ typedef struct {
         float target;        /* Stored target (unclamped) */
         float rise_rate;     /* Rise rate, units/s */
         float fall_rate;     /* Fall rate, units/s */
+        float accel;         /* Acceleration limit, units/s^2 */
         float limit_min;     /* Output clamp minimum */
         float limit_max;     /* Output clamp maximum */
-        rampg_shape_t shape; /* Ramp profile (linear or S-curve) */
-        float move_start;    /* Start value of the planned move */
-        float move_end;      /* End value of the planned move */
-        float move_duration; /* Planned move duration in seconds */
-        float move_elapsed;  /* Elapsed move time in seconds */
-        bool plan_valid;     /* True when the planned move is current */
+        float vel;           /* Internal: current output rate */
+        rampg_shape_t shape; /* Ramp profile */
         bool enabled;        /* True when the ramp is enabled */
 } rampg_t;
 ```
 
-`rampg_t` is a plain aggregate with no pointers. It is safe to `memcpy`, embed in a larger struct, or place in shared memory provided the usual thread-safety caveats are respected. The seven fields added in 0.2.0 are appended at the end, so existing field offsets are stable across versions, but `sizeof(rampg_t)` grows from 24 to 48 bytes.
+`rampg_t` is a plain aggregate with no pointers. It is safe to `memcpy`, embed in a larger struct, or place in shared memory provided the usual thread-safety caveats are respected.
+
+Every field except `vel` is caller-facing configuration and may be read directly; read the output rate with `rampg_get_rate` rather than reading `vel`. An instance must be initialised with `rampg_init` before any other call: the defaults are not all zero, so aggregate initialisation is not sufficient.
 
 ### Configuration macros
 
 | Macro                 | Default              | Meaning                                                            |
 | --------------------- | -------------------- | ------------------------------------------------------------------ |
 | `RAMPG_DEFAULT_RATE`  | `100.0f`             | Default rise and fall rate set by `rampg_init` (units per second). |
+| `RAMPG_DEFAULT_ACCEL` | `RAMPG_DEFAULT_RATE * 10.0f` | Default acceleration limit set by `rampg_init` (units per second squared). Reaches the default rate in 0.1 s. |
 | `RAMPG_LIMIT_MIN`     | `-1000000.0f`        | Default output clamp minimum set by `rampg_init`.                  |
 | `RAMPG_LIMIT_MAX`     | `1000000.0f`         | Default output clamp maximum set by `rampg_init`.                  |
 | `RAMPG_DEFAULT_SHAPE` | `RAMPG_SHAPE_LINEAR` | Default ramp profile set by `rampg_init`.                          |
@@ -240,9 +262,10 @@ The contract for each function is:
 | `rampg_set_target` | `ramp` has been initialised.                                       |
 | `rampg_set_rate`   | `ramp` has been initialised. `rate > 0`.                           |
 | `rampg_set_rates`  | `ramp` has been initialised. `rise_rate > 0` and `fall_rate > 0`.  |
+| `rampg_set_accel`  | `ramp` has been initialised. `accel > 0`.                          |
 | `rampg_set_limits` | `ramp` has been initialised. `min <= max`.                         |
 | `rampg_set_shape`  | `ramp` has been initialised.                                       |
-| `rampg_update`     | `ramp` has been initialised. `dt >= 0`.                            |
+| `rampg_update`     | `ramp` has been initialised. `dt > 0`.                             |
 | `rampg_get`        | `ramp` has been initialised.                                       |
 | `rampg_at_target`  | `ramp` has been initialised.                                       |
 | `rampg_get_rate`   | `ramp` has been initialised.                                       |
@@ -251,6 +274,8 @@ The contract for each function is:
 | `rampg_is_enabled` | `ramp` has been initialised.                                       |
 
 Inputs that violate these preconditions invoke undefined behaviour in the same sense as any C library function. Validate at the call site if your application cannot guarantee them.
+
+`rampg_update` is the one exception. It defines the behaviour for a non-finite time step or effective target and for a non-positive rate or acceleration, holding the output in each case. This is a containment measure for values a control loop derives from the outside world, not a substitute for honouring the contract.
 
 ## Use Cases
 
@@ -264,13 +289,14 @@ Inputs that violate these preconditions invoke undefined behaviour in the same s
 
 ### Supported architectures
 
-rampg works on any C11 toolchain with an IEEE-754 `float` and a conformant `<stdbool.h>`. There are no chip-specific code paths.
+rampg works on any C11 toolchain with an IEEE-754 `float`, a conformant `<stdbool.h>`, and a conformant `<math.h>`. There are no chip-specific code paths.
 
 | Requirement               | Notes                                                                                     |
 | ------------------------- | ----------------------------------------------------------------------------------------- |
 | C11 toolchain             | Any C99 compiler with a working `<stdbool.h>` will also build but is not exercised by CI. |
 | IEEE-754 binary32 `float` | Universal on real targets.                                                                |
 | `<stdbool.h>` with `bool` | Used in the public API by `rampg_at_target`, `rampg_set_enabled`, and `rampg_is_enabled`. |
+| `<math.h>` with `sqrtf` and `isfinite` | Used by the implementation only, never by the public header. Some hosted toolchains need an explicit `-lm`; the Meson build adds it where required. |
 
 Targets meeting these requirements are expected to work, including (but not limited to) x86_64, AArch64, ARMv7-M, ARMv8-M, RISC-V, AVR, and the TI C2000 family.
 
@@ -280,6 +306,7 @@ Targets meeting these requirements are expected to work, including (but not limi
 | ----------- | ------------ | ---------------------------- |
 | GCC, Clang  | x86_64 Linux | Run in CI under ASan + UBSan |
 | Apple Clang | x86_64 macOS | Run in CI under ASan         |
+| GCC         | AArch64 Linux | Test suite run manually; results identical to x86_64 |
 
 Other architectures from the supported list above are expected to work but are not yet routinely validated. If you bring up rampg on a new target, please report back so the table can be extended.
 
@@ -289,7 +316,8 @@ rampg is a single-axis control primitive. The following are explicitly out of sc
 
 - **No internal time source**: the caller supplies `dt`. The library does not query a clock or depend on an OS.
 - **No runtime precondition checks**: preconditions are part of the contract, not enforced at runtime. See [Preconditions and Validation](#preconditions-and-validation).
-- **No arbitrary shaping**: the two available profiles are the linear step and the quintic S-curve. There is no user-defined profile, jerk limit, or per-segment shaping.
+- **No arbitrary shaping**: the two available profiles are the linear step and the acceleration-limited S-curve. There is no user-defined profile or per-segment shaping.
+- **No jerk limit**: the S-curve bounds the output rate and its rate of change, so acceleration is piecewise constant and jerk is unbounded. Bounding jerk as well would need a third limit and a substantially larger solver, for a bounded gain over a profile that already removes the rate steps that matter.
 - **No thread safety**: the caller must provide mutual exclusion when a `rampg_t` is shared across threads or interrupt service routines.
 - **No persistence**: the `rampg_t` is volatile by design. Save and restore externally if you need persistence across resets.
 
@@ -300,10 +328,11 @@ rampg is a single-axis control primitive. The following are explicitly out of sc
 | **Memory**            | All operations use caller-owned storage. No dynamic allocation.                                                                                                          |
 | **Memory layout**     | `rampg_t` is a plain aggregate with no pointers. Safe to `memcpy`, embed, or place in shared memory.                                                                     |
 | **Thread safety**     | Not thread-safe. Caller must synchronise if a `rampg_t` is shared across threads or ISRs.                                                                                |
-| **Error handling**    | No runtime validation. Preconditions are documented via `@pre`; honouring them is the caller's responsibility.                                                           |
+| **Error handling**    | No runtime validation, except that `rampg_update` holds the output on a non-finite time step or target, or a non-positive rate or acceleration. Preconditions are otherwise documented via `@pre`. |
 | **Floating point**    | All values are single-precision `float`, suitable for embedded targets.                                                                                                  |
 | **Time source**       | Caller supplies `dt` in seconds. The library has no dependency on clocks or OS.                                                                                          |
-| **WCET**              | Execution time is bounded and constant per call. No loops on input data; arithmetic is fixed.                                                                            |
+| **WCET**              | Execution time is bounded and constant per call. No loops on input data; arithmetic is fixed and there is no per-move planning step. The S-curve path evaluates one square root per call, which dominates its cost on a target without hardware support for it; the linear path uses none. |
 | **Limits and target** | The stored target is unclamped. `rampg_update`, `rampg_at_target`, `rampg_get_rate`, and `rampg_get_state` evaluate against the target clamped to the active limits, so widening limits later recovers intent. |
-| **Configuration**     | Override `RAMPG_DEFAULT_RATE`, `RAMPG_LIMIT_MIN`, `RAMPG_LIMIT_MAX`, and `RAMPG_DEFAULT_SHAPE` before including `rampg.h`, or via a toolchain-level `-D` flag. |
+| **Configuration**     | Override `RAMPG_DEFAULT_RATE`, `RAMPG_DEFAULT_ACCEL`, `RAMPG_LIMIT_MIN`, `RAMPG_LIMIT_MAX`, and `RAMPG_DEFAULT_SHAPE` before including `rampg.h`, or via a toolchain-level `-D` flag. |
+| **Numerical range**   | The output accumulates in a `float`. Keep the ratio of output magnitude to per-update step within about `1e6`, or the accumulator cannot represent the step. |
 | **Version header**    | `rampg_version.h` is auto-generated by the Meson build and placed in the output build folder.                                                                            |

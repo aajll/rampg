@@ -45,13 +45,25 @@
 #define RAMPG_DEFAULT_RATE (100.0f)
 #endif
 
+#ifndef RAMPG_DEFAULT_ACCEL
+/**
+ * @def RAMPG_DEFAULT_ACCEL
+ * @brief Default acceleration limit in units per second squared.
+ *
+ * Bounds how fast the output rate may change under RAMPG_SHAPE_SCURVE.
+ * Unused by RAMPG_SHAPE_LINEAR. The default reaches RAMPG_DEFAULT_RATE
+ * in 0.1 s, so it tracks an overridden default rate.
+ */
+#define RAMPG_DEFAULT_ACCEL (RAMPG_DEFAULT_RATE * 10.0f)
+#endif
+
 #ifndef RAMPG_DEFAULT_SHAPE
 /**
  * @def RAMPG_DEFAULT_SHAPE
  * @brief Default ramp shape at initialisation.
  *
  * One of the rampg_shape_t values: RAMPG_SHAPE_LINEAR (constant-rate
- * step) or RAMPG_SHAPE_SIGMOID (quintic S-curve at the same peak rate).
+ * step) or RAMPG_SHAPE_SCURVE (acceleration-limited S-curve).
  */
 #define RAMPG_DEFAULT_SHAPE RAMPG_SHAPE_LINEAR
 #endif

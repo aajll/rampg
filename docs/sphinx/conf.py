@@ -41,7 +41,7 @@ language = "en"
 
 html_theme = "alabaster"
 html_theme_options = {
-    "description": "A lightweight linear ramp generator for embedded control loops",
+    "description": "A lightweight ramp generator for embedded control loops",
 }
 
 html_static_path = ["_static"]

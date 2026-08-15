@@ -503,472 +503,820 @@ TEST_CASE(test_sc_frequency_ramp_scenario)
         TEST_ASSERT(ticks >= 999 && ticks <= 1001);
 }
 
-/* ================ Sigmoid (S-curve) =======================================
+/* ================ S-curve helpers ===========================================
  */
 
-TEST_CASE(test_sigmoid_reaches_target_exactly)
+/*
+ * Closed-form duration of an S-curve move of `dist` at `rate` and `accel`.
+ * Trapezoidal when the move is long enough to reach the rate limit,
+ * triangular otherwise.
+ */
+static float
+scurve_duration(float dist, float rate, float accel)
 {
-        /* 0 -> 100 at peak rate 100; T = 1.875 * 100 / 100 = 1.875 s */
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_target(&ramp, 100.0f);
-
-        int steps = 0;
-        while (!rampg_at_target(&ramp) && steps < 100000) {
-                rampg_update(&ramp, 0.0001f);
-                steps++;
+        if ((rate * rate / accel) <= dist) {
+                return (dist / rate) + (rate / accel);
         }
-
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 100.0f));
+        return 2.0f * sqrtf(dist / accel);
 }
 
-TEST_CASE(test_sigmoid_duration_from_peak_rate)
+/* Drive a ramp to its target, asserting the invariants on every update. */
+static int
+drive_checked(rampg_t *r, float dt, int max_ticks)
 {
-        /* T = 1.875 * dist / rate = 1.875 * 1.0 / 1000 = 0.001875 s, so the
-         * 8th step at dt = 0.00025 s (elapsed 0.002 s) is the first to
-         * cross the duration and snaps to the target. */
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 1000.0f);
-        rampg_set_target(&ramp, 1.0f);
+        float rate_limit =
+            (r->rise_rate > r->fall_rate) ? r->rise_rate : r->fall_rate;
+        float bound = r->accel * dt;
+        float prev = rampg_get_rate(r);
+        int ticks = 0;
 
-        int steps = 0;
-        while (!rampg_at_target(&ramp) && steps < 100000) {
-                rampg_update(&ramp, 0.00025f);
-                steps++;
+        while (!rampg_at_target(r) && (ticks < max_ticks)) {
+                rampg_update(r, dt);
+                float now = rampg_get_rate(r);
+
+                if (!rampg_at_target(r)) {
+                        /* The rate changes by at most one acceleration step,
+                         * allowing for float rounding near the envelope. */
+                        TEST_ASSERT(fabsf(now - prev)
+                                    <= (bound * 2.0f) + 1e-6f);
+                }
+                /* The rate never exceeds the configured limit. */
+                TEST_ASSERT(fabsf(now) <= rate_limit + 1e-4f);
+                /* The output stays inside the limits. */
+                TEST_ASSERT(rampg_get(r) >= r->limit_min - 1e-4f);
+                TEST_ASSERT(rampg_get(r) <= r->limit_max + 1e-4f);
+
+                prev = now;
+                ticks++;
         }
-
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 1.0f));
-        TEST_ASSERT(steps == 8);
+        TEST_ASSERT(ticks < max_ticks);
+        return ticks;
 }
 
-TEST_CASE(test_sigmoid_midpoint_at_half_duration)
+/* ================ S-curve ===================================================
+ */
+
+TEST_CASE(test_scurve_reaches_target_exactly)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_target(&ramp, 100.0f);
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_target(&r, 100.0f);
 
-        /* T = 1.875 s. dt = 0.001953125 = 2^-9 is exact in binary32 and
-         * divides the half-duration: T/2 = 0.9375 s = 480 steps, so the
-         * accumulated elapsed time stays an exact multiple of 2^-9 and
-         * u = 0.5 exactly. */
-        for (int i = 0; i < 480; i++) {
-                rampg_update(&ramp, 0.001953125f);
-        }
+        drive_checked(&r, 0.001f, 100000);
 
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 50.0f));
+        TEST_ASSERT(rampg_at_target(&r));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 100.0f));
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 0.0f));
 }
 
-TEST_CASE(test_sigmoid_peak_rate_matches_configured)
+TEST_CASE(test_scurve_trapezoidal_duration)
 {
-        /* T = 0.1875 s; the maximum sampled |dv/dt| must reach the
-         * configured peak rate (within the 1e-3 step discretisation). */
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_target(&ramp, 10.0f);
+        /* 1000 units at 100 u/s and 1000 u/s^2 reaches the rate limit:
+         * t = dist/rate + rate/accel = 10 + 0.1 = 10.1 s. */
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_limits(&r, 0.0f, 2000.0f);
+        rampg_set_target(&r, 1000.0f);
 
-        float dt = 0.001f;
+        int ticks = drive_checked(&r, 0.001f, 100000);
+        float expected = scurve_duration(1000.0f, 100.0f, 1000.0f);
+
+        TEST_ASSERT(FLOAT_NEAR(expected, 10.1f, 1e-4f));
+        TEST_ASSERT(FLOAT_NEAR((float)ticks * 0.001f, expected, 0.05f));
+}
+
+TEST_CASE(test_scurve_triangular_duration)
+{
+        /* 1 unit at 100 u/s and 1000 u/s^2 never reaches the rate limit:
+         * t = 2*sqrt(dist/accel) = 2*sqrt(0.001) = 0.0632 s. */
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_target(&r, 1.0f);
+
+        int ticks = drive_checked(&r, 0.0001f, 100000);
+        float expected = scurve_duration(1.0f, 100.0f, 1000.0f);
+
+        TEST_ASSERT(FLOAT_NEAR(expected, 0.06325f, 1e-4f));
+        TEST_ASSERT(FLOAT_NEAR((float)ticks * 0.0001f, expected, 0.005f));
+}
+
+TEST_CASE(test_scurve_reaches_configured_peak_rate)
+{
+        /* A move long enough to cruise must reach the configured rate and
+         * must never exceed it. */
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_limits(&r, 0.0f, 2000.0f);
+        rampg_set_target(&r, 1000.0f);
+
         float peak = 0.0f;
-        for (int i = 0; i < 188 && !rampg_at_target(&ramp); i++) {
-                float before = rampg_get(&ramp);
-                rampg_update(&ramp, dt);
-                float dv = rampg_get(&ramp) - before;
-                if (dv < 0.0f) {
-                        dv = -dv;
+        int ticks = 0;
+        while (!rampg_at_target(&r) && (ticks < 100000)) {
+                rampg_update(&r, 0.001f);
+                float rate = rampg_get_rate(&r);
+                TEST_ASSERT(rate <= 100.0f + 1e-4f);
+                if (rate > peak) {
+                        peak = rate;
                 }
-                if (dv / dt > peak) {
-                        peak = dv / dt;
-                }
+                ticks++;
         }
-
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(peak > 85.0f && peak < 115.0f);
+        TEST_ASSERT(FLOAT_NEAR(peak, 100.0f, 1e-3f));
 }
 
-TEST_CASE(test_sigmoid_zero_velocity_at_ends)
+TEST_CASE(test_scurve_eases_in_and_out)
 {
-        /* S'(0) = S'(1) = 0, so the first and last increments are
-         * small compared with the configured peak rate. */
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_target(&ramp, 100.0f);
+        /* The first and last updates of a move run well below the configured
+         * rate: the profile eases in and out rather than stepping. */
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 100.0f);
+        rampg_set_limits(&r, 0.0f, 2000.0f);
+        rampg_set_target(&r, 1000.0f);
 
-        float dt = 0.01f;
-        float first = rampg_update(&ramp, dt);
-        TEST_ASSERT(first < 0.1f);
+        rampg_update(&r, 0.001f);
+        TEST_ASSERT(rampg_get_rate(&r) < 1.0f);
 
         float last = 0.0f;
-        int steps = 0;
-        while (!rampg_at_target(&ramp) && steps < 100000) {
-                float before = rampg_get(&ramp);
-                rampg_update(&ramp, dt);
-                last = rampg_get(&ramp) - before;
-                if (last < 0.0f) {
-                        last = -last;
+        int ticks = 0;
+        while (!rampg_at_target(&r) && (ticks < 200000)) {
+                last = rampg_get_rate(&r);
+                rampg_update(&r, 0.001f);
+                ticks++;
+        }
+        TEST_ASSERT(rampg_at_target(&r));
+        /* The rate on the update before arrival is a small multiple of one
+         * acceleration step, not a hard stop from the cruise rate. */
+        TEST_ASSERT(last < 100.0f * 0.001f * 4.0f);
+}
+
+TEST_CASE(test_scurve_no_overshoot)
+{
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 1000.0f);
+        rampg_set_accel(&r, 10000.0f);
+        rampg_set_limits(&r, 0.0f, 5.0f);
+        rampg_set_target(&r, 5.0f);
+
+        int ticks = 0;
+        while (!rampg_at_target(&r) && (ticks < 100000)) {
+                rampg_update(&r, 0.001f);
+                TEST_ASSERT(rampg_get(&r) >= 0.0f);
+                TEST_ASSERT(rampg_get(&r) <= 5.0f);
+                ticks++;
+        }
+        TEST_ASSERT(rampg_at_target(&r));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 5.0f));
+}
+
+TEST_CASE(test_scurve_asymmetric_rates)
+{
+        /* The fall leg at twice the rise rate takes correspondingly less
+         * time, once the fixed accel ramp is accounted for. */
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rates(&r, 100.0f, 200.0f);
+        rampg_set_accel(&r, 10000.0f);
+        rampg_set_limits(&r, 0.0f, 1000.0f);
+
+        rampg_set_target(&r, 1000.0f);
+        int up = drive_checked(&r, 0.0001f, 1000000);
+
+        rampg_set_target(&r, 0.0f);
+        int down = drive_checked(&r, 0.0001f, 1000000);
+
+        float t_up = scurve_duration(1000.0f, 100.0f, 10000.0f);
+        float t_down = scurve_duration(1000.0f, 200.0f, 10000.0f);
+
+        TEST_ASSERT(FLOAT_NEAR((float)up * 0.0001f, t_up, 0.01f));
+        TEST_ASSERT(FLOAT_NEAR((float)down * 0.0001f, t_down, 0.01f));
+        TEST_ASSERT(down < up);
+}
+
+TEST_CASE(test_scurve_retarget_carries_the_rate)
+{
+        /* The defect this profile exists to avoid: a mid-move retarget must
+         * not drop the output rate to zero. */
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_limits(&r, 0.0f, 2000.0f);
+        rampg_set_target(&r, 1000.0f);
+
+        for (int i = 0; i < 500; i++) {
+                rampg_update(&r, 0.001f);
+        }
+        float before = rampg_get_rate(&r);
+        TEST_ASSERT(FLOAT_NEAR(before, 100.0f, 1e-3f));
+
+        rampg_set_target(&r, 1200.0f);
+
+        /* The rate is unchanged by the setter, and the next update moves it
+         * by no more than one acceleration step. */
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), before));
+        rampg_update(&r, 0.001f);
+        TEST_ASSERT(fabsf(rampg_get_rate(&r) - before) <= 1.0f + 1e-4f);
+
+        drive_checked(&r, 0.001f, 100000);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 1200.0f));
+}
+
+TEST_CASE(test_scurve_progresses_under_a_moving_setpoint)
+{
+        /*
+         * A setpoint re-issued with a small change on every update must not
+         * stall the ramp. Drive for the undisturbed duration of the move at a
+         * range of re-issue cadences and require the output to have arrived.
+         *
+         * The profile this replaced re-planned from rest on every target
+         * change and so never left the flat start of its curve: under the
+         * 1 kHz cadence below it covered under one unit in sixty seconds.
+         */
+        static const int cadences[] = {1, 2, 10, 100, 500};
+        float expected = scurve_duration(1000.0f, 100.0f, 1000.0f);
+        int budget = (int)((expected / 0.001f) + 200.0f);
+
+        for (unsigned c = 0; c < 5u; c++) {
+                rampg_t r;
+                rampg_init(&r, 0.0f);
+                rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+                rampg_set_rate(&r, 100.0f);
+                rampg_set_accel(&r, 1000.0f);
+                rampg_set_limits(&r, 0.0f, 2000.0f);
+
+                int ticks = 0;
+                while (ticks < budget) {
+                        int phase = (ticks / cadences[c]) % 2;
+                        rampg_set_target(&r, phase ? 1000.0f : 1000.01f);
+                        rampg_update(&r, 0.001f);
+                        TEST_ASSERT(fabsf(rampg_get_rate(&r))
+                                    <= 100.0f + 1e-4f);
+                        ticks++;
                 }
-                steps++;
-        }
 
-        /* The move spans 187.5 steps, so the last increment is a small
-         * fraction of one step at peak rate; 0.1f is 10% of that. */
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(last < 0.1f);
+                /* Arrived, within the dither band, in about the normal time. */
+                TEST_ASSERT(FLOAT_NEAR(rampg_get(&r), 1000.0f, 0.05f));
+        }
 }
 
-TEST_CASE(test_sigmoid_no_overshoot)
+TEST_CASE(test_scurve_reversal_crosses_zero_smoothly)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 1000.0f);
-        rampg_set_target(&ramp, 5.0f);
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_limits(&r, -1000.0f, 2000.0f);
+        rampg_set_target(&r, 1000.0f);
 
-        for (int i = 0; i < 200 && !rampg_at_target(&ramp); i++) {
-                rampg_update(&ramp, 0.001f);
-                TEST_ASSERT(rampg_get(&ramp) >= 0.0f);
-                TEST_ASSERT(rampg_get(&ramp) <= 5.0f);
+        for (int i = 0; i < 500; i++) {
+                rampg_update(&r, 0.001f);
         }
+        TEST_ASSERT(rampg_get_rate(&r) > 90.0f);
 
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 5.0f));
+        /* Reverse to a target far behind the current value. */
+        rampg_set_target(&r, -500.0f);
+
+        float prev = rampg_get_rate(&r);
+        int ticks = 0;
+        int seen_negative = 0;
+        while (!rampg_at_target(&r) && (ticks < 200000)) {
+                rampg_update(&r, 0.001f);
+                float now = rampg_get_rate(&r);
+                if (!rampg_at_target(&r)) {
+                        TEST_ASSERT(fabsf(now - prev) <= 2.0f + 1e-4f);
+                }
+                if (now < -1.0f) {
+                        seen_negative = 1;
+                }
+                prev = now;
+                ticks++;
+        }
+        TEST_ASSERT(seen_negative);
+        TEST_ASSERT(rampg_at_target(&r));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), -500.0f));
 }
 
-TEST_CASE(test_sigmoid_retarget_mid_move)
+TEST_CASE(test_scurve_rate_change_mid_move)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_target(&ramp, 100.0f);
+        /*
+         * Lowering the rate limit below the rate the ramp is already running
+         * at cannot take effect instantly: that would be an unbounded
+         * deceleration. The ramp eases down to the new limit at the
+         * acceleration limit instead, and the move still completes.
+         */
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_limits(&r, 0.0f, 2000.0f);
+        rampg_set_target(&r, 1000.0f);
 
-        for (int i = 0; i < 50; i++) {
-                rampg_update(&ramp, 0.01f);
+        for (int i = 0; i < 500; i++) {
+                rampg_update(&r, 0.001f);
         }
+        float before = rampg_get_rate(&r);
+        TEST_ASSERT(FLOAT_NEAR(before, 100.0f, 1e-3f));
 
-        float mid = rampg_get(&ramp);
-        TEST_ASSERT(mid > 0.0f);
+        rampg_set_rate(&r, 50.0f);
+        /* The setter does not move the output rate. */
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), before));
 
-        rampg_set_target(&ramp, 30.0f);
-        /* Re-planning must not move the value before the next update. */
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), mid));
-        int steps = 0;
-        while (!rampg_at_target(&ramp) && steps < 100000) {
-                rampg_update(&ramp, 0.0001f);
-                steps++;
+        /* It eases down to the new limit within one acceleration step per
+         * update, and takes about (100 - 50) / 1000 s to get there. */
+        float prev = before;
+        int ticks = 0;
+        while ((rampg_get_rate(&r) > 50.0f) && (ticks < 1000)) {
+                rampg_update(&r, 0.001f);
+                float now = rampg_get_rate(&r);
+                TEST_ASSERT(fabsf(now - prev) <= 1.0f + 1e-4f);
+                prev = now;
+                ticks++;
         }
+        TEST_ASSERT(ticks >= 45 && ticks <= 55);
 
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 30.0f));
+        drive_checked(&r, 0.001f, 100000);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 1000.0f));
 }
 
-TEST_CASE(test_sigmoid_reassert_unchanged_target)
+TEST_CASE(test_scurve_accel_change_mid_move)
 {
-        /* A control loop that re-asserts an unchanged target on every tick
-         * must not re-plan the move from the current value: the plan stays
-         * valid and the move completes. */
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_target(&ramp, 100.0f);
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_limits(&r, 0.0f, 2000.0f);
+        rampg_set_target(&r, 1000.0f);
 
-        int steps = 0;
-        while (!rampg_at_target(&ramp) && steps < 100000) {
-                rampg_set_target(&ramp, 100.0f);
-                rampg_update(&ramp, 0.001f);
-                steps++;
+        for (int i = 0; i < 500; i++) {
+                rampg_update(&r, 0.001f);
         }
+        rampg_set_accel(&r, 200.0f);
 
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 100.0f));
+        drive_checked(&r, 0.001f, 200000);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 1000.0f));
 }
 
-TEST_CASE(test_sigmoid_rate_change_mid_move)
+TEST_CASE(test_scurve_limit_narrowed_mid_move)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_target(&ramp, 100.0f);
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_limits(&r, 0.0f, 2000.0f);
+        rampg_set_target(&r, 1000.0f);
+
+        for (int i = 0; i < 500; i++) {
+                rampg_update(&r, 0.001f);
+        }
+        TEST_ASSERT(rampg_get(&r) > 20.0f);
+
+        /* Narrowing the limits below the current value displaces the output,
+         * so the rate is reset rather than carried. */
+        rampg_set_limits(&r, 0.0f, 10.0f);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 10.0f));
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 0.0f));
+        TEST_ASSERT(rampg_at_target(&r));
+}
+
+TEST_CASE(test_scurve_limit_widened_mid_move)
+{
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_limits(&r, 0.0f, 50.0f);
+        rampg_set_target(&r, 200.0f);
+
+        drive_checked(&r, 0.001f, 100000);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 50.0f));
+
+        /* Widening the limits makes the original target reachable again. */
+        rampg_set_limits(&r, 0.0f, 500.0f);
+        TEST_ASSERT(!rampg_at_target(&r));
+
+        drive_checked(&r, 0.001f, 100000);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 200.0f));
+}
+
+TEST_CASE(test_scurve_target_beyond_limit)
+{
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_limits(&r, 0.0f, 30.0f);
+        rampg_set_target(&r, 200.0f);
+
+        drive_checked(&r, 0.001f, 100000);
+
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 30.0f));
+        TEST_ASSERT(rampg_at_target(&r));
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 0.0f));
+        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_AT_TARGET);
+}
+
+TEST_CASE(test_scurve_zero_distance_move)
+{
+        rampg_t r;
+        rampg_init(&r, 42.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_target(&r, 42.0f);
+
+        TEST_ASSERT(rampg_at_target(&r));
+        TEST_ASSERT(FLOAT_EQ(rampg_update(&r, 0.01f), 42.0f));
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 0.0f));
+}
+
+TEST_CASE(test_scurve_zero_dt_no_progress)
+{
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_target(&r, 100.0f);
+
+        for (int i = 0; i < 10; i++) {
+                TEST_ASSERT(FLOAT_EQ(rampg_update(&r, 0.0f), 0.0f));
+        }
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 0.0f));
+}
+
+TEST_CASE(test_scurve_very_large_dt)
+{
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 1.0f);
+        rampg_set_accel(&r, 10.0f);
+        rampg_set_target(&r, 10.0f);
+
+        /* A single step larger than the whole move snaps without overshoot. */
+        float v = rampg_update(&r, 1000.0f);
+        TEST_ASSERT(FLOAT_EQ(v, 10.0f));
+        TEST_ASSERT(rampg_at_target(&r));
+}
+
+TEST_CASE(test_scurve_long_slow_move_completes)
+{
+        /* The old profile accumulated elapsed time in a float and stalled on
+         * long moves. This profile has no time accumulator; a move two orders
+         * of magnitude longer than the tick still completes. */
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 50.0f);
+        rampg_set_accel(&r, 200.0f);
+        rampg_set_limits(&r, 0.0f, 1000.0f);
+        rampg_set_target(&r, 500.0f);
+
+        int ticks = drive_checked(&r, 0.0001f, 500000);
+        float expected = scurve_duration(500.0f, 50.0f, 200.0f);
+
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 500.0f));
+        TEST_ASSERT(FLOAT_NEAR((float)ticks * 0.0001f, expected, 0.05f));
+}
+
+TEST_CASE(test_scurve_shape_change_from_linear_carries_the_rate)
+{
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_limits(&r, 0.0f, 2000.0f);
+        rampg_set_target(&r, 1000.0f);
 
         for (int i = 0; i < 100; i++) {
-                rampg_update(&ramp, 0.01f);
+                rampg_update(&r, 0.001f);
         }
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 100.0f));
 
-        float mid = rampg_get(&ramp);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        /* The S-curve starts at the rate the linear ramp was running at. */
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 100.0f));
+
+        drive_checked(&r, 0.001f, 100000);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 1000.0f));
+}
+
+TEST_CASE(test_scurve_shape_change_to_linear_mid_move)
+{
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_limits(&r, 0.0f, 2000.0f);
+        rampg_set_target(&r, 1000.0f);
+
+        for (int i = 0; i < 50; i++) {
+                rampg_update(&r, 0.001f);
+        }
+        float mid = rampg_get(&r);
         TEST_ASSERT(mid > 0.0f);
 
-        rampg_set_rate(&ramp, 50.0f);
-        /* Re-planning must not move the value before the next update. */
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), mid));
-        int steps = 0;
-        while (!rampg_at_target(&ramp) && steps < 100000) {
-                rampg_update(&ramp, 0.0001f);
-                steps++;
-        }
+        rampg_set_shape(&r, RAMPG_SHAPE_LINEAR);
+        /* LINEAR resumes at the full configured rate. */
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 100.0f));
 
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 100.0f));
+        int ticks = 0;
+        while (!rampg_at_target(&r) && (ticks < 100000)) {
+                rampg_update(&r, 0.001f);
+                ticks++;
+        }
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 1000.0f));
 }
 
-TEST_CASE(test_sigmoid_shape_change_mid_move)
+TEST_CASE(test_scurve_reset_clears_the_rate)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_target(&ramp, 100.0f);
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_limits(&r, 0.0f, 2000.0f);
+        rampg_set_target(&r, 1000.0f);
 
-        /* Half way there, linearly: value = 50 */
-        for (int i = 0; i < 50; i++) {
-                rampg_update(&ramp, 0.01f);
+        for (int i = 0; i < 500; i++) {
+                rampg_update(&r, 0.001f);
         }
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 50.0f));
+        TEST_ASSERT(rampg_get_rate(&r) > 50.0f);
 
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        /* Re-planning must not move the value before the next update. */
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 50.0f));
-        int steps = 0;
-        while (!rampg_at_target(&ramp) && steps < 100000) {
-                rampg_update(&ramp, 0.0001f);
-                steps++;
-        }
-
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 100.0f));
+        rampg_reset(&r, 42.0f);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 42.0f));
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 0.0f));
+        TEST_ASSERT(rampg_at_target(&r));
 }
 
-TEST_CASE(test_sigmoid_shape_change_to_linear_mid_move)
+/* ================ Containment ===============================================
+ *
+ * rampg_update() is total: a value it cannot act on holds the output rather
+ * than corrupting the state, and the ramp recovers on the next valid input.
+ */
+
+/* Put a ramp mid-move in the requested shape. */
+static void
+containment_setup(rampg_t *r, rampg_shape_t shape)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_target(&ramp, 100.0f);
-
-        /* Part way through the sigmoid move: the value is strictly between
-         * the start and the target, since the curve is monotonically
-         * increasing. */
-        for (int i = 0; i < 50; i++) {
-                rampg_update(&ramp, 0.01f);
-        }
-        float mid = rampg_get(&ramp);
-        TEST_ASSERT(mid > 0.0f);
-        TEST_ASSERT(mid < 100.0f);
-
-        rampg_set_shape(&ramp, RAMPG_SHAPE_LINEAR);
-        /* Re-planning must not move the value before the next update. */
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), mid));
-        /* The remaining distance at 100 units/s is far below 10 s, so the
-         * linear phase completes the move. */
-        int steps = 0;
-        while (!rampg_at_target(&ramp) && steps < 100000) {
-                rampg_update(&ramp, 0.0001f);
-                steps++;
-        }
-
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 100.0f));
+        rampg_init(r, 0.0f);
+        rampg_set_shape(r, shape);
+        rampg_set_rate(r, 100.0f);
+        rampg_set_accel(r, 1000.0f);
+        rampg_set_limits(r, 0.0f, 1000.0f);
+        rampg_set_target(r, 500.0f);
+        rampg_update(r, 0.05f);
+        TEST_ASSERT(rampg_get(r) > 0.0f);
 }
 
-TEST_CASE(test_sigmoid_asymmetric_rates)
+/* Assert the ramp still completes a fresh move after a bad input. */
+static void
+containment_recovers(rampg_t *r)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rates(&ramp, 100.0f, 50.0f);
-        rampg_set_target(&ramp, 100.0f);
+        rampg_set_rate(r, 100.0f);
+        rampg_set_accel(r, 1000.0f);
+        rampg_set_target(r, 50.0f);
 
-        /* Rise: T = 1.875 * 100 / 100 = 1.875 s. dt = 2^-9 s. The value
-         * rounds to the exact target just before the duration snap, so
-         * the move finishes at 959 steps (analytic 960). */
-        int rise_steps = 0;
-        while (!rampg_at_target(&ramp) && rise_steps < 100000) {
-                rampg_update(&ramp, 0.001953125f);
-                rise_steps++;
+        int ticks = 0;
+        while (!rampg_at_target(r) && (ticks < 200000)) {
+                rampg_update(r, 0.001f);
+                ticks++;
         }
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 100.0f));
-        TEST_ASSERT(rise_steps >= 950 && rise_steps <= 965);
-
-        rampg_set_target(&ramp, 0.0f);
-
-        /* Fall: T = 1.875 * 100 / 50 = 3.75 s, exactly twice the rise
-         * duration, so the fall takes about twice as many steps as the
-         * rise. Swapping the rise and fall rates would swap these counts. */
-        int fall_steps = 0;
-        while (!rampg_at_target(&ramp) && fall_steps < 100000) {
-                rampg_update(&ramp, 0.001953125f);
-                fall_steps++;
-        }
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 0.0f));
-        TEST_ASSERT(fall_steps >= 1900 && fall_steps <= 1925);
-        TEST_ASSERT(fall_steps > rise_steps);
-        TEST_ASSERT(fall_steps >= 2 * rise_steps - 16);
-        TEST_ASSERT(fall_steps <= 2 * rise_steps + 16);
+        TEST_ASSERT(rampg_at_target(r));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(r), 50.0f));
 }
 
-TEST_CASE(test_sigmoid_target_beyond_limit)
+TEST_CASE(test_containment_bad_dt)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_limits(&ramp, 0.0f, 80.0f);
-        rampg_set_target(&ramp, 200.0f);
+        const float bad[] = {NAN, INFINITY, -INFINITY, -0.01f};
+        const rampg_shape_t shapes[] = {RAMPG_SHAPE_LINEAR, RAMPG_SHAPE_SCURVE};
 
-        int steps = 0;
-        while (!rampg_at_target(&ramp) && steps < 100000) {
-                rampg_update(&ramp, 0.0001f);
-                steps++;
-                TEST_ASSERT(rampg_get(&ramp) <= 80.0f);
+        for (unsigned s = 0; s < 2u; s++) {
+                for (unsigned i = 0; i < 4u; i++) {
+                        rampg_t r;
+                        containment_setup(&r, shapes[s]);
+                        float held = rampg_get(&r);
+
+                        TEST_ASSERT(FLOAT_EQ(rampg_update(&r, bad[i]), held));
+                        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), held));
+                        containment_recovers(&r);
+                }
         }
-
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 80.0f));
 }
 
-TEST_CASE(test_sigmoid_zero_distance_move)
+TEST_CASE(test_containment_bad_target)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 5.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_target(&ramp, 5.0f);
+        const float bad[] = {NAN, INFINITY, -INFINITY};
+        const rampg_shape_t shapes[] = {RAMPG_SHAPE_LINEAR, RAMPG_SHAPE_SCURVE};
 
-        TEST_ASSERT(rampg_at_target(&ramp));
+        for (unsigned s = 0; s < 2u; s++) {
+                for (unsigned i = 0; i < 3u; i++) {
+                        rampg_t r;
+                        containment_setup(&r, shapes[s]);
+                        /* Limits must be infinite too, otherwise the target
+                         * clamps to a finite limit and the move is valid. */
+                        rampg_set_limits(&r, -INFINITY, INFINITY);
+                        float held = rampg_get(&r);
 
-        for (int i = 0; i < 10; i++) {
-                rampg_update(&ramp, 0.01f);
+                        rampg_set_target(&r, bad[i]);
+                        TEST_ASSERT(FLOAT_EQ(rampg_update(&r, 0.01f), held));
+
+                        rampg_set_limits(&r, 0.0f, 1000.0f);
+                        containment_recovers(&r);
+                }
         }
-
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 5.0f));
 }
 
-TEST_CASE(test_sigmoid_limit_narrowed_mid_move)
+TEST_CASE(test_containment_infinite_target_clamps_to_limit)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_target(&ramp, 50.0f);
+        /* An infinite target inside finite limits is not an error: it
+         * resolves to the limit and the ramp moves there normally. */
+        rampg_t r;
+        containment_setup(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_target(&r, INFINITY);
 
-        /* T = 1.875 * 50 / 100 = 0.9375 s = 480 steps of 2^-9 s. After
-         * 240 steps, u = 0.5 and S(0.5) = 0.5, so the value is exactly
-         * 25. */
-        for (int i = 0; i < 240; i++) {
-                rampg_update(&ramp, 0.001953125f);
+        int ticks = 0;
+        while (!rampg_at_target(&r) && (ticks < 200000)) {
+                rampg_update(&r, 0.001f);
+                ticks++;
         }
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 25.0f));
-
-        /* Narrowing the upper limit below the current value clamps the
-         * value immediately, to the effective target itself. */
-        rampg_set_limits(&ramp, 0.0f, 20.0f);
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 20.0f));
-
-        /* The clamp lands the value on the effective target, so the ramp
-         * reports at target immediately. */
-        TEST_ASSERT(rampg_at_target(&ramp));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 1000.0f));
 }
 
-TEST_CASE(test_sigmoid_limit_widened_mid_move)
+TEST_CASE(test_containment_bad_rate)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_limits(&ramp, 0.0f, 50.0f);
-        rampg_set_target(&ramp, 100.0f);
+        const float bad[] = {0.0f, -100.0f, NAN};
+        const rampg_shape_t shapes[] = {RAMPG_SHAPE_LINEAR, RAMPG_SHAPE_SCURVE};
 
-        /* Effective target is the clamped limit, 50: T = 1.875 * 50 / 100
-         * = 0.9375 s = 480 steps of 2^-9 s. After 240 steps, u = 0.5 and
-         * S(0.5) = 0.5, so the value is exactly 25. */
-        for (int i = 0; i < 240; i++) {
-                rampg_update(&ramp, 0.001953125f);
+        for (unsigned s = 0; s < 2u; s++) {
+                for (unsigned i = 0; i < 3u; i++) {
+                        rampg_t r;
+                        containment_setup(&r, shapes[s]);
+                        float held = rampg_get(&r);
+
+                        rampg_set_rate(&r, bad[i]);
+                        /* Holds; in particular a negative rate must not snap
+                         * to the target or run the ramp backwards. */
+                        for (int k = 0; k < 10; k++) {
+                                TEST_ASSERT(
+                                    FLOAT_EQ(rampg_update(&r, 0.01f), held));
+                        }
+                        containment_recovers(&r);
+                }
         }
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 25.0f));
-
-        /* Widening the limits restores the stored target; the stored
-         * target was never modified by the clamp. */
-        rampg_set_limits(&ramp, 0.0f, 500.0f);
-
-        /* Re-planned from the current value: T = 1.875 * 75 / 100 =
-         * 1.40625 s = 720 steps of 2^-9 s analytically; the value
-         * rounds to the target just before the duration snap, so the
-         * move completes at 719 steps. */
-        int steps = 0;
-        while (!rampg_at_target(&ramp) && steps < 100000) {
-                rampg_update(&ramp, 0.001953125f);
-                steps++;
-                TEST_ASSERT(rampg_get(&ramp) <= 100.0f);
-        }
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 100.0f));
-        TEST_ASSERT(steps >= 719 && steps <= 721);
 }
 
-TEST_CASE(test_sigmoid_zero_dt_no_progress)
+TEST_CASE(test_containment_bad_accel)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_target(&ramp, 100.0f);
+        const float bad[] = {0.0f, -1000.0f, NAN};
 
-        for (int i = 0; i < 10; i++) {
-                rampg_update(&ramp, 0.0f);
+        for (unsigned i = 0; i < 3u; i++) {
+                rampg_t r;
+                containment_setup(&r, RAMPG_SHAPE_SCURVE);
+                float held = rampg_get(&r);
+
+                rampg_set_accel(&r, bad[i]);
+                for (int k = 0; k < 10; k++) {
+                        TEST_ASSERT(FLOAT_EQ(rampg_update(&r, 0.01f), held));
+                }
+                containment_recovers(&r);
         }
-
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 0.0f));
-        TEST_ASSERT(!rampg_at_target(&ramp));
 }
 
-/* ================ Introspection (rate and state) ==========================
+TEST_CASE(test_containment_inverted_limits)
+{
+        /*
+         * min > max violates the contract, but the ramp must still settle
+         * deterministically rather than run away or report a rate for an
+         * output that is not moving.
+         */
+        const rampg_shape_t shapes[] = {RAMPG_SHAPE_LINEAR, RAMPG_SHAPE_SCURVE};
+
+        for (unsigned s = 0; s < 2u; s++) {
+                rampg_t r;
+                rampg_init(&r, 0.0f);
+                rampg_set_shape(&r, shapes[s]);
+                rampg_set_rate(&r, 100.0f);
+                rampg_set_accel(&r, 1000.0f);
+                rampg_set_limits(&r, 100.0f, -100.0f);
+                rampg_set_target(&r, 0.0f);
+
+                for (int i = 0; i < 200; i++) {
+                        rampg_update(&r, 0.001f);
+                }
+
+                TEST_ASSERT(!isnan(rampg_get(&r)));
+                TEST_ASSERT(!isinf(rampg_get(&r)));
+                /* Settled, and reporting no rate while it is not moving. */
+                float settled = rampg_get(&r);
+                rampg_update(&r, 0.001f);
+                TEST_ASSERT(FLOAT_EQ(rampg_get(&r), settled));
+                TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 0.0f));
+        }
+}
+
+TEST_CASE(test_containment_linear_ignores_accel)
+{
+        /* LINEAR does not use the acceleration limit, so a bad one must not
+         * stop it. */
+        rampg_t r;
+        containment_setup(&r, RAMPG_SHAPE_LINEAR);
+        rampg_set_accel(&r, -1.0f);
+
+        int ticks = 0;
+        while (!rampg_at_target(&r) && (ticks < 200000)) {
+                rampg_update(&r, 0.001f);
+                ticks++;
+        }
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 500.0f));
+}
+
+/* ================ Introspection =============================================
  */
 
 TEST_CASE(test_get_rate_linear_rising)
 {
         rampg_t r;
         rampg_init(&r, 0.0f);
-        rampg_set_rate(&r, 100.0f);
+        rampg_set_rate(&r, 42.0f);
         rampg_set_target(&r, 100.0f);
-
-        rampg_update(&r, 0.1f);
-        TEST_ASSERT(!rampg_at_target(&r));
-        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 100.0f));
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 42.0f));
 }
 
 TEST_CASE(test_get_rate_linear_falling)
 {
         rampg_t r;
         rampg_init(&r, 100.0f);
-        rampg_set_rate(&r, 100.0f);
+        rampg_set_rates(&r, 10.0f, 42.0f);
         rampg_set_target(&r, 0.0f);
-
-        rampg_update(&r, 0.1f);
-        TEST_ASSERT(!rampg_at_target(&r));
-        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), -100.0f));
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), -42.0f));
 }
 
 TEST_CASE(test_get_rate_linear_at_rest)
 {
         rampg_t r;
-        rampg_init(&r, 5.0f);
-        rampg_set_rate(&r, 100.0f);
-        rampg_set_target(&r, 5.0f);
-
+        rampg_init(&r, 10.0f);
         TEST_ASSERT(rampg_at_target(&r));
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 0.0f));
+}
+
+TEST_CASE(test_get_rate_scurve_tracks_the_applied_step)
+{
+        /* The reported rate is the one the last update actually applied. */
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 500.0f);
+        rampg_set_limits(&r, 0.0f, 2000.0f);
+        rampg_set_target(&r, 1000.0f);
+
+        for (int i = 0; i < 2000; i++) {
+                float before = rampg_get(&r);
+                rampg_update(&r, 0.001f);
+                float measured = (rampg_get(&r) - before) / 0.001f;
+                if (!rampg_at_target(&r)) {
+                        TEST_ASSERT(
+                            FLOAT_NEAR(rampg_get_rate(&r), measured, 0.05f));
+                }
+        }
+}
+
+TEST_CASE(test_get_rate_scurve_zero_at_target)
+{
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_target(&r, 10.0f);
+
+        drive_checked(&r, 0.001f, 100000);
         TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 0.0f));
 }
 
@@ -976,221 +1324,277 @@ TEST_CASE(test_get_state_linear)
 {
         rampg_t r;
         rampg_init(&r, 0.0f);
-        rampg_set_rate(&r, 100.0f);
-        rampg_set_target(&r, 100.0f);
-
-        /* Not yet advanced: moving toward the target. */
-        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_MOVING);
-
-        rampg_update(&r, 0.1f);
-        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_MOVING);
-
-        int steps = 0;
-        while (!rampg_at_target(&r) && steps < 100000) {
-                rampg_update(&r, 0.01f);
-                steps++;
-        }
-        TEST_ASSERT(rampg_at_target(&r));
         TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_AT_TARGET);
-        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 0.0f));
-}
 
-TEST_CASE(test_get_rate_sigmoid_zero_before_update)
-{
-        /* No update has planned the move, so the rate is zero and the
-         * ramp is moving toward the target. */
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_target(&ramp, 100.0f);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_target(&r, 10.0f);
+        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_MOVING);
 
-        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_MOVING);
-        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&ramp), 0.0f));
-}
-
-TEST_CASE(test_get_rate_sigmoid_peak_at_midpoint)
-{
-        /* T = 1.875 s. dt = 2^-9 divides the half-duration exactly, so
-         * after 480 steps u = 0.5 and the rate equals the configured
-         * peak rate. */
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_target(&ramp, 100.0f);
-
-        for (int i = 0; i < 480; i++) {
-                rampg_update(&ramp, 0.001953125f);
+        int ticks = 0;
+        while (!rampg_at_target(&r) && (ticks < 10000)) {
+                rampg_update(&r, 0.001f);
+                ticks++;
         }
-
-        TEST_ASSERT(!rampg_at_target(&ramp));
-        TEST_ASSERT(FLOAT_NEAR(rampg_get_rate(&ramp), 100.0f, 1e-3f));
+        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_AT_TARGET);
 }
 
-TEST_CASE(test_get_rate_sigmoid_zero_at_target)
+TEST_CASE(test_get_state_scurve_clamped_target)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_target(&ramp, 100.0f);
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_limits(&r, 0.0f, 25.0f);
+        rampg_set_target(&r, 500.0f);
 
-        int steps = 0;
-        while (!rampg_at_target(&ramp) && steps < 100000) {
-                rampg_update(&ramp, 0.001f);
-                steps++;
-        }
-
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_AT_TARGET);
-        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&ramp), 0.0f));
+        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_MOVING);
+        drive_checked(&r, 0.001f, 100000);
+        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_AT_TARGET);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 25.0f));
 }
 
-TEST_CASE(test_get_state_sigmoid_clamped_target)
-{
-        /* A target above the upper limit resolves to the clamped value.
-         * The ramp moves to the clamped value, then reports at-target
-         * with a zero rate. */
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
-        rampg_set_rate(&ramp, 100.0f);
-        rampg_set_limits(&ramp, 0.0f, 80.0f);
-        rampg_set_target(&ramp, 200.0f);
-
-        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_MOVING);
-
-        int steps = 0;
-        while (!rampg_at_target(&ramp) && steps < 100000) {
-                rampg_update(&ramp, 0.001f);
-                steps++;
-        }
-
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 80.0f));
-        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_AT_TARGET);
-        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&ramp), 0.0f));
-}
-
-/* ================ Enabled / disabled ======================================
+/* ================ Enabled / disabled ========================================
  */
 
 TEST_CASE(test_enabled_by_default)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        TEST_ASSERT(rampg_is_enabled(&ramp));
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        TEST_ASSERT(rampg_is_enabled(&r));
+        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_AT_TARGET);
 }
 
-TEST_CASE(test_disabled_holds_value_and_zero_rate)
+TEST_CASE(test_disabled_holds_value_and_reports_disabled)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_target(&ramp, 100.0f);
-        rampg_update(&ramp, 0.1f);
-        float held = rampg_get(&ramp);
-        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_MOVING);
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_target(&r, 100.0f);
+        rampg_update(&r, 0.1f);
+        float held = rampg_get(&r);
+        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_MOVING);
 
-        rampg_set_enabled(&ramp, false);
-        TEST_ASSERT(!rampg_is_enabled(&ramp));
+        rampg_set_enabled(&r, false);
+        TEST_ASSERT(!rampg_is_enabled(&r));
 
-        /* Two more steps: value frozen, rate zero, still MOVING, not
-         * at-target. */
-        rampg_update(&ramp, 0.1f);
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), held));
-        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&ramp), 0.0f));
-        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_MOVING);
-        TEST_ASSERT(!rampg_at_target(&ramp));
+        for (int i = 0; i < 3; i++) {
+                rampg_update(&r, 0.1f);
+                TEST_ASSERT(FLOAT_EQ(rampg_get(&r), held));
+                TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 0.0f));
+                /* A frozen ramp reports DISABLED, not MOVING. */
+                TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_DISABLED);
+        }
+        /* at_target stays purely positional. */
+        TEST_ASSERT(!rampg_at_target(&r));
+}
 
-        rampg_update(&ramp, 0.1f);
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), held));
-        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&ramp), 0.0f));
-        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_MOVING);
+TEST_CASE(test_disabled_at_target_still_reports_disabled)
+{
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_target(&r, 10.0f);
+
+        int ticks = 0;
+        while (!rampg_at_target(&r) && (ticks < 10000)) {
+                rampg_update(&r, 0.01f);
+                ticks++;
+        }
+        rampg_set_enabled(&r, false);
+
+        TEST_ASSERT(rampg_at_target(&r));
+        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_DISABLED);
+
+        rampg_set_enabled(&r, true);
+        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_AT_TARGET);
+}
+
+TEST_CASE(test_disable_clears_the_rate)
+{
+        /* A held output is at rest, so re-enabling must ease away from rest
+         * rather than resume at a rate the output no longer has. */
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_accel(&r, 1000.0f);
+        rampg_set_limits(&r, 0.0f, 2000.0f);
+        rampg_set_target(&r, 1000.0f);
+
+        for (int i = 0; i < 500; i++) {
+                rampg_update(&r, 0.001f);
+        }
+        TEST_ASSERT(rampg_get_rate(&r) > 50.0f);
+
+        rampg_set_enabled(&r, false);
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 0.0f));
+
+        rampg_set_enabled(&r, true);
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 0.0f));
+
+        rampg_update(&r, 0.001f);
+        /* One acceleration step away from rest, not back at cruise. */
+        TEST_ASSERT(rampg_get_rate(&r) <= 1.0f + 1e-4f);
+
+        drive_checked(&r, 0.001f, 100000);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 1000.0f));
 }
 
 TEST_CASE(test_reenable_resumes_from_current_value)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_target(&ramp, 100.0f);
-        rampg_update(&ramp, 0.1f);
-        float held = rampg_get(&ramp);
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_target(&r, 100.0f);
+        rampg_update(&r, 0.1f);
+        float held = rampg_get(&r);
 
-        rampg_set_enabled(&ramp, false);
-        rampg_update(&ramp, 0.5f); /* held while disabled */
-        rampg_set_enabled(&ramp, true);
+        rampg_set_enabled(&r, false);
+        rampg_update(&r, 0.5f);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), held));
 
-        rampg_update(&ramp, 0.1f);
-        /* Resume: the value advances from the held value again. */
-        TEST_ASSERT(rampg_get(&ramp) > held);
-        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_MOVING);
+        rampg_set_enabled(&r, true);
+        rampg_update(&r, 0.1f);
+        TEST_ASSERT(rampg_get(&r) > held);
 
-        /* Resume to target and confirm it lands exactly. */
-        int i;
-        for (i = 0; i < 1000 && !rampg_at_target(&ramp); i++) {
-                rampg_update(&ramp, 0.01f);
+        int ticks = 0;
+        while (!rampg_at_target(&r) && (ticks < 10000)) {
+                rampg_update(&r, 0.01f);
+                ticks++;
         }
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 100.0f));
-        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_AT_TARGET);
-}
-
-TEST_CASE(test_disabled_at_target_reports_at_target)
-{
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_target(&ramp, 100.0f);
-        int i;
-        for (i = 0; i < 1000 && !rampg_at_target(&ramp); i++) {
-                rampg_update(&ramp, 0.05f);
-        }
-        TEST_ASSERT(rampg_at_target(&ramp));
-
-        rampg_set_enabled(&ramp, false);
-        /* A disabled ramp that is at target still reports AT_TARGET. */
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_AT_TARGET);
-        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&ramp), 0.0f));
-
-        rampg_set_enabled(&ramp, true);
-        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_AT_TARGET);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 100.0f));
+        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_AT_TARGET);
 }
 
 TEST_CASE(test_retarget_while_disabled_applies_on_resume)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_target(&ramp, 100.0f);
-        rampg_update(&ramp, 0.1f);
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_target(&r, 100.0f);
+        rampg_update(&r, 0.1f);
 
-        rampg_set_enabled(&ramp, false);
-        rampg_update(&ramp, 0.5f);
-        float held = rampg_get(&ramp);
+        rampg_set_enabled(&r, false);
+        rampg_update(&r, 0.5f);
+        float held = rampg_get(&r);
 
-        /* A new target issued while disabled is applied on resume. */
-        rampg_set_target(&ramp, 50.0f);
-        rampg_set_enabled(&ramp, true);
+        rampg_set_target(&r, 50.0f);
+        rampg_set_enabled(&r, true);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), held));
 
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), held));
-        int i;
-        for (i = 0; i < 1000 && !rampg_at_target(&ramp); i++) {
-                rampg_update(&ramp, 0.01f);
+        int ticks = 0;
+        while (!rampg_at_target(&r) && (ticks < 10000)) {
+                rampg_update(&r, 0.01f);
+                ticks++;
         }
-        TEST_ASSERT(rampg_at_target(&ramp));
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 50.0f));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 50.0f));
 }
 
 TEST_CASE(test_reset_preserves_disabled_state)
 {
-        rampg_t ramp;
-        rampg_init(&ramp, 0.0f);
-        rampg_set_target(&ramp, 100.0f);
-        rampg_set_enabled(&ramp, false);
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_target(&r, 100.0f);
+        rampg_set_enabled(&r, false);
 
-        rampg_reset(&ramp, 42.0f);
-        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 42.0f));
-        TEST_ASSERT(!rampg_is_enabled(&ramp));
+        rampg_reset(&r, 42.0f);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 42.0f));
+        TEST_ASSERT(!rampg_is_enabled(&r));
+        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_DISABLED);
+}
+
+/* ================ Property sweep ============================================
+ */
+
+TEST_CASE(test_scurve_invariants_over_many_configurations)
+{
+        /*
+         * Sweep a spread of rates, accelerations, tick lengths and distances,
+         * including direction reversals, asserting on every update that the
+         * rate stays within its limit, that it changes by at most one
+         * acceleration step, and that the output stays inside the limits.
+         */
+        static const float rates[] = {0.5f, 10.0f, 100.0f, 900.0f};
+        static const float accels[] = {5.0f, 250.0f, 20000.0f};
+        static const float dts[] = {0.0001f, 0.001f, 0.02f};
+        static const float targets[] = {0.05f, 7.0f, 250.0f, -180.0f};
+
+        const int tick_cap = 400000;
+        int covered = 0;
+
+        for (unsigned a = 0; a < 4u; a++) {
+                for (unsigned b = 0; b < 3u; b++) {
+                        for (unsigned c = 0; c < 3u; c++) {
+                                for (unsigned d = 0; d < 4u; d++) {
+                                        float dist = fabsf(targets[d]);
+                                        float dur = scurve_duration(
+                                            dist, rates[a], accels[b]);
+
+                                        /* Keep the sweep bounded: skip
+                                         * combinations whose move is longer
+                                         * than the tick budget allows. */
+                                        if ((dur / dts[c]) > (float)tick_cap) {
+                                                continue;
+                                        }
+
+                                        rampg_t r;
+                                        rampg_init(&r, 0.0f);
+                                        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+                                        rampg_set_rate(&r, rates[a]);
+                                        rampg_set_accel(&r, accels[b]);
+                                        rampg_set_limits(&r, -500.0f, 500.0f);
+
+                                        rampg_set_target(&r, targets[d]);
+                                        drive_checked(&r, dts[c], tick_cap);
+                                        TEST_ASSERT(FLOAT_NEAR(
+                                            rampg_get(&r), targets[d], 1e-3f));
+
+                                        /* Reverse straight back. */
+                                        rampg_set_target(&r, 0.0f);
+                                        drive_checked(&r, dts[c], tick_cap);
+                                        TEST_ASSERT(
+                                            FLOAT_EQ(rampg_get(&r), 0.0f));
+                                        covered++;
+                                }
+                        }
+                }
+        }
+
+        /* Guard against the sweep silently skipping everything. */
+        TEST_ASSERT(covered >= 80);
+}
+
+TEST_CASE(test_scurve_retarget_sweep_stays_bounded)
+{
+        /*
+         * Retarget repeatedly mid-move, including inside the braking
+         * distance, and assert the output never leaves the limits and the
+         * rate never exceeds its limit. The acceleration bound is not
+         * asserted here: a target moved inside the braking distance cannot be
+         * reached under it, and the generator stops on the target instead.
+         */
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        rampg_set_rates(&r, 120.0f, 300.0f);
+        rampg_set_accel(&r, 800.0f);
+        rampg_set_limits(&r, -100.0f, 100.0f);
+
+        unsigned seed = 1u;
+        for (int i = 0; i < 200000; i++) {
+                if ((i % 37) == 0) {
+                        seed = (seed * 1103515245u) + 12345u;
+                        float t = (float)((seed >> 16) % 20001u) / 100.0f;
+                        rampg_set_target(&r, t - 100.0f);
+                }
+                rampg_update(&r, 0.001f);
+
+                TEST_ASSERT(rampg_get(&r) >= -100.0f);
+                TEST_ASSERT(rampg_get(&r) <= 100.0f);
+                TEST_ASSERT(fabsf(rampg_get_rate(&r)) <= 300.0f + 1e-4f);
+                TEST_ASSERT(!isnan(rampg_get(&r)));
+        }
 }
 
 /* ================ Runner ===================================================
@@ -1234,7 +1638,7 @@ main(void)
         run_test(test_clamp_applied_after_init,
                  "test_clamp_applied_after_init");
 
-        /* Target beyond clamp (bug fix) */
+        /* Target beyond clamp */
         run_test(test_target_above_upper_limit,
                  "test_target_above_upper_limit");
         run_test(test_target_below_lower_limit,
@@ -1268,66 +1672,94 @@ main(void)
         run_test(test_very_large_dt, "test_very_large_dt");
         run_test(test_small_dt_accumulation, "test_small_dt_accumulation");
         run_test(test_small_dt_precision, "test_small_dt_precision");
-        /* Sigmoid */
-        run_test(test_sigmoid_reaches_target_exactly,
-                 "test_sigmoid_reaches_target_exactly");
-        run_test(test_sigmoid_duration_from_peak_rate,
-                 "test_sigmoid_duration_from_peak_rate");
-        run_test(test_sigmoid_midpoint_at_half_duration,
-                 "test_sigmoid_midpoint_at_half_duration");
-        run_test(test_sigmoid_peak_rate_matches_configured,
-                 "test_sigmoid_peak_rate_matches_configured");
-        run_test(test_sigmoid_zero_velocity_at_ends,
-                 "test_sigmoid_zero_velocity_at_ends");
-        run_test(test_sigmoid_no_overshoot, "test_sigmoid_no_overshoot");
-        run_test(test_sigmoid_retarget_mid_move,
-                 "test_sigmoid_retarget_mid_move");
-        run_test(test_sigmoid_reassert_unchanged_target,
-                 "test_sigmoid_reassert_unchanged_target");
-        run_test(test_sigmoid_rate_change_mid_move,
-                 "test_sigmoid_rate_change_mid_move");
-        run_test(test_sigmoid_shape_change_mid_move,
-                 "test_sigmoid_shape_change_mid_move");
-        run_test(test_sigmoid_shape_change_to_linear_mid_move,
-                 "test_sigmoid_shape_change_to_linear_mid_move");
-        run_test(test_sigmoid_limit_narrowed_mid_move,
-                 "test_sigmoid_limit_narrowed_mid_move");
-        run_test(test_sigmoid_limit_widened_mid_move,
-                 "test_sigmoid_limit_widened_mid_move");
-        run_test(test_sigmoid_asymmetric_rates,
-                 "test_sigmoid_asymmetric_rates");
-        run_test(test_sigmoid_target_beyond_limit,
-                 "test_sigmoid_target_beyond_limit");
-        run_test(test_sigmoid_zero_distance_move,
-                 "test_sigmoid_zero_distance_move");
-        run_test(test_sigmoid_zero_dt_no_progress,
-                 "test_sigmoid_zero_dt_no_progress");
-        /* Introspection (rate and state) */
+
+        /* S-curve */
+        run_test(test_scurve_reaches_target_exactly,
+                 "test_scurve_reaches_target_exactly");
+        run_test(test_scurve_trapezoidal_duration,
+                 "test_scurve_trapezoidal_duration");
+        run_test(test_scurve_triangular_duration,
+                 "test_scurve_triangular_duration");
+        run_test(test_scurve_reaches_configured_peak_rate,
+                 "test_scurve_reaches_configured_peak_rate");
+        run_test(test_scurve_eases_in_and_out, "test_scurve_eases_in_and_out");
+        run_test(test_scurve_no_overshoot, "test_scurve_no_overshoot");
+        run_test(test_scurve_asymmetric_rates, "test_scurve_asymmetric_rates");
+        run_test(test_scurve_retarget_carries_the_rate,
+                 "test_scurve_retarget_carries_the_rate");
+        run_test(test_scurve_progresses_under_a_moving_setpoint,
+                 "test_scurve_progresses_under_a_moving_setpoint");
+        run_test(test_scurve_reversal_crosses_zero_smoothly,
+                 "test_scurve_reversal_crosses_zero_smoothly");
+        run_test(test_scurve_rate_change_mid_move,
+                 "test_scurve_rate_change_mid_move");
+        run_test(test_scurve_accel_change_mid_move,
+                 "test_scurve_accel_change_mid_move");
+        run_test(test_scurve_limit_narrowed_mid_move,
+                 "test_scurve_limit_narrowed_mid_move");
+        run_test(test_scurve_limit_widened_mid_move,
+                 "test_scurve_limit_widened_mid_move");
+        run_test(test_scurve_target_beyond_limit,
+                 "test_scurve_target_beyond_limit");
+        run_test(test_scurve_zero_distance_move,
+                 "test_scurve_zero_distance_move");
+        run_test(test_scurve_zero_dt_no_progress,
+                 "test_scurve_zero_dt_no_progress");
+        run_test(test_scurve_very_large_dt, "test_scurve_very_large_dt");
+        run_test(test_scurve_long_slow_move_completes,
+                 "test_scurve_long_slow_move_completes");
+        run_test(test_scurve_shape_change_from_linear_carries_the_rate,
+                 "test_scurve_shape_change_from_linear_carries_the_rate");
+        run_test(test_scurve_shape_change_to_linear_mid_move,
+                 "test_scurve_shape_change_to_linear_mid_move");
+        run_test(test_scurve_reset_clears_the_rate,
+                 "test_scurve_reset_clears_the_rate");
+
+        /* Containment */
+        run_test(test_containment_bad_dt, "test_containment_bad_dt");
+        run_test(test_containment_bad_target, "test_containment_bad_target");
+        run_test(test_containment_infinite_target_clamps_to_limit,
+                 "test_containment_infinite_target_clamps_to_limit");
+        run_test(test_containment_bad_rate, "test_containment_bad_rate");
+        run_test(test_containment_bad_accel, "test_containment_bad_accel");
+        run_test(test_containment_inverted_limits,
+                 "test_containment_inverted_limits");
+        run_test(test_containment_linear_ignores_accel,
+                 "test_containment_linear_ignores_accel");
+
+        /* Introspection */
         run_test(test_get_rate_linear_rising, "test_get_rate_linear_rising");
         run_test(test_get_rate_linear_falling, "test_get_rate_linear_falling");
         run_test(test_get_rate_linear_at_rest, "test_get_rate_linear_at_rest");
+        run_test(test_get_rate_scurve_tracks_the_applied_step,
+                 "test_get_rate_scurve_tracks_the_applied_step");
+        run_test(test_get_rate_scurve_zero_at_target,
+                 "test_get_rate_scurve_zero_at_target");
         run_test(test_get_state_linear, "test_get_state_linear");
-        run_test(test_get_rate_sigmoid_zero_before_update,
-                 "test_get_rate_sigmoid_zero_before_update");
-        run_test(test_get_rate_sigmoid_peak_at_midpoint,
-                 "test_get_rate_sigmoid_peak_at_midpoint");
-        run_test(test_get_rate_sigmoid_zero_at_target,
-                 "test_get_rate_sigmoid_zero_at_target");
-        run_test(test_get_state_sigmoid_clamped_target,
-                 "test_get_state_sigmoid_clamped_target");
+        run_test(test_get_state_scurve_clamped_target,
+                 "test_get_state_scurve_clamped_target");
+
         /* Enabled / disabled */
         run_test(test_enabled_by_default, "test_enabled_by_default");
-        run_test(test_disabled_holds_value_and_zero_rate,
-                 "test_disabled_holds_value_and_zero_rate");
+        run_test(test_disabled_holds_value_and_reports_disabled,
+                 "test_disabled_holds_value_and_reports_disabled");
+        run_test(test_disabled_at_target_still_reports_disabled,
+                 "test_disabled_at_target_still_reports_disabled");
+        run_test(test_disable_clears_the_rate, "test_disable_clears_the_rate");
         run_test(test_reenable_resumes_from_current_value,
                  "test_reenable_resumes_from_current_value");
-        run_test(test_disabled_at_target_reports_at_target,
-                 "test_disabled_at_target_reports_at_target");
         run_test(test_retarget_while_disabled_applies_on_resume,
                  "test_retarget_while_disabled_applies_on_resume");
         run_test(test_reset_preserves_disabled_state,
                  "test_reset_preserves_disabled_state");
-        /* SC integration scenarios */
+
+        /* Property sweeps */
+        run_test(test_scurve_invariants_over_many_configurations,
+                 "test_scurve_invariants_over_many_configurations");
+        run_test(test_scurve_retarget_sweep_stays_bounded,
+                 "test_scurve_retarget_sweep_stays_bounded");
+
+        /* Integration scenarios */
         run_test(test_sc_precharge_scenario, "test_sc_precharge_scenario");
         run_test(test_sc_frequency_ramp_scenario,
                  "test_sc_frequency_ramp_scenario");
