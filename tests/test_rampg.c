@@ -998,6 +998,126 @@ TEST_CASE(test_get_state_sigmoid_clamped_target)
         TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&ramp), 0.0f));
 }
 
+/* ================ Enabled / disabled ======================================
+ */
+
+TEST_CASE(test_enabled_by_default)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        TEST_ASSERT(rampg_is_enabled(&ramp));
+}
+
+TEST_CASE(test_disabled_holds_value_and_zero_rate)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_target(&ramp, 100.0f);
+        rampg_update(&ramp, 0.1f);
+        float held = rampg_get(&ramp);
+        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_MOVING);
+
+        rampg_set_enabled(&ramp, false);
+        TEST_ASSERT(!rampg_is_enabled(&ramp));
+
+        /* Two more steps: value frozen, rate zero, still MOVING, not
+         * at-target. */
+        rampg_update(&ramp, 0.1f);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), held));
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&ramp), 0.0f));
+        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_MOVING);
+        TEST_ASSERT(!rampg_at_target(&ramp));
+
+        rampg_update(&ramp, 0.1f);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), held));
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&ramp), 0.0f));
+        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_MOVING);
+}
+
+TEST_CASE(test_reenable_resumes_from_current_value)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_target(&ramp, 100.0f);
+        rampg_update(&ramp, 0.1f);
+        float held = rampg_get(&ramp);
+
+        rampg_set_enabled(&ramp, false);
+        rampg_update(&ramp, 0.5f); /* held while disabled */
+        rampg_set_enabled(&ramp, true);
+
+        rampg_update(&ramp, 0.1f);
+        /* Resume: the value advances from the held value again. */
+        TEST_ASSERT(rampg_get(&ramp) > held);
+        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_MOVING);
+
+        /* Resume to target and confirm it lands exactly. */
+        int i;
+        for (i = 0; i < 1000 && !rampg_at_target(&ramp); i++) {
+                rampg_update(&ramp, 0.01f);
+        }
+        TEST_ASSERT(rampg_at_target(&ramp));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 100.0f));
+        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_AT_TARGET);
+}
+
+TEST_CASE(test_disabled_at_target_reports_at_target)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_target(&ramp, 100.0f);
+        int i;
+        for (i = 0; i < 1000 && !rampg_at_target(&ramp); i++) {
+                rampg_update(&ramp, 0.05f);
+        }
+        TEST_ASSERT(rampg_at_target(&ramp));
+
+        rampg_set_enabled(&ramp, false);
+        /* A disabled ramp that is at target still reports AT_TARGET. */
+        TEST_ASSERT(rampg_at_target(&ramp));
+        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_AT_TARGET);
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&ramp), 0.0f));
+
+        rampg_set_enabled(&ramp, true);
+        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_AT_TARGET);
+}
+
+TEST_CASE(test_retarget_while_disabled_applies_on_resume)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_target(&ramp, 100.0f);
+        rampg_update(&ramp, 0.1f);
+
+        rampg_set_enabled(&ramp, false);
+        rampg_update(&ramp, 0.5f);
+        float held = rampg_get(&ramp);
+
+        /* A new target issued while disabled is applied on resume. */
+        rampg_set_target(&ramp, 50.0f);
+        rampg_set_enabled(&ramp, true);
+
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), held));
+        int i;
+        for (i = 0; i < 1000 && !rampg_at_target(&ramp); i++) {
+                rampg_update(&ramp, 0.01f);
+        }
+        TEST_ASSERT(rampg_at_target(&ramp));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 50.0f));
+}
+
+TEST_CASE(test_reset_preserves_disabled_state)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_target(&ramp, 100.0f);
+        rampg_set_enabled(&ramp, false);
+
+        rampg_reset(&ramp, 42.0f);
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 42.0f));
+        TEST_ASSERT(!rampg_is_enabled(&ramp));
+}
+
 /* ================ Runner ===================================================
  */
 
@@ -1116,6 +1236,18 @@ main(void)
                  "test_get_rate_sigmoid_zero_at_target");
         run_test(test_get_state_sigmoid_clamped_target,
                  "test_get_state_sigmoid_clamped_target");
+        /* Enabled / disabled */
+        run_test(test_enabled_by_default, "test_enabled_by_default");
+        run_test(test_disabled_holds_value_and_zero_rate,
+                 "test_disabled_holds_value_and_zero_rate");
+        run_test(test_reenable_resumes_from_current_value,
+                 "test_reenable_resumes_from_current_value");
+        run_test(test_disabled_at_target_reports_at_target,
+                 "test_disabled_at_target_reports_at_target");
+        run_test(test_retarget_while_disabled_applies_on_resume,
+                 "test_retarget_while_disabled_applies_on_resume");
+        run_test(test_reset_preserves_disabled_state,
+                 "test_reset_preserves_disabled_state");
         /* SC integration scenarios */
         run_test(test_sc_precharge_scenario, "test_sc_precharge_scenario");
         run_test(test_sc_frequency_ramp_scenario,

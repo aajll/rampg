@@ -2,7 +2,7 @@
 
 The `rampg` library ships two ramp profiles. The default, `RAMPG_SHAPE_LINEAR`, moves at a constant rate from the current value to the target. The S-curve profile, `RAMPG_SHAPE_SIGMOID`, moves along a smooth quintic that starts and ends at zero velocity, so the output eases in and out instead of stepping in and out. This document explains the S-curve profile: what it buys you, how it is configured, how it is computed, and what the generated graphs show.
 
-The rest of the public API (targets, limits, resets, `rampg_update`) behaves exactly the same in both profiles. See the README for the full API reference.
+The rest of the public API (targets, limits, resets, `rampg_update`, and enable/disable) behaves exactly the same in both profiles. See the README for the full API reference.
 
 ## Why an S-curve
 
@@ -91,6 +91,12 @@ Two read-only getters expose live progress without advancing the ramp: `rampg_ge
 `rampg_get_rate` returns the **effective rate** in units per second. For a sigmoid move this is the instantaneous slope of the planned S-curve, so it reads zero before the first `rampg_update` (the plan does not exist yet), rises to the configured peak at the midpoint of the move, and falls back to zero at the end. A target, limit, rate, or shape change invalidates the plan, so the rate reads zero again until the next `rampg_update` re-plans from the current value. This is the same quantity that appears in the rate panels of the graphs below.
 
 `rampg_get_state` returns `RAMPG_STATE_MOVING` while the output is ramping and `RAMPG_STATE_AT_TARGET` when the output is at rest at the **effective target** (the stored target clamped to the active limits). `rampg_at_target` is the boolean form of `RAMPG_STATE_AT_TARGET`. Because the state resolves against the clamped target, a target that lies outside the limits is treated as reachable at the clamped value: the ramp moves to the clamped value, then reports at-target with a zero rate. There is no separate "unreachable" state.
+
+## Enabling and disabling
+
+A ramp can be paused with `rampg_set_enabled` and resumed on demand. A disabled ramp holds its output: `rampg_update` returns the value unchanged and `rampg_get_rate` reads zero. The target, rates, limits, and shape are preserved, so re-enabling resumes the move from the current value. In a SIGMOID move the in-progress plan is kept, so the output continues the same S-curve where it left off instead of re-planning from a flat start.
+
+`rampg_at_target` and `rampg_get_state` ignore the flag. A disabled ramp mid-move still reports `RAMPG_STATE_MOVING`, and one at rest reports `RAMPG_STATE_AT_TARGET`. A ramp is enabled by default after `rampg_init`, and `rampg_reset` does not change the flag.
 
 ## Reading the graphs
 

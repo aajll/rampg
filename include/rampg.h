@@ -67,6 +67,7 @@ typedef struct {
         float move_duration; /**< Planned move duration in seconds. */
         float move_elapsed;  /**< Elapsed move time in seconds. */
         bool plan_valid;     /**< True when the planned move is current. */
+        bool enabled;        /**< True when the ramp is enabled. */
 } rampg_t;
 
 /* ================ TYPEDEFS ================================================ */
@@ -153,6 +154,21 @@ void rampg_set_limits(rampg_t *ramp, float min, float max);
 void rampg_set_shape(rampg_t *ramp, rampg_shape_t shape);
 
 /**
+ * @brief Enable or disable the ramp.
+ *
+ * A disabled ramp holds its output: rampg_update() leaves the value
+ * unchanged and rampg_get_rate() reads zero. The target, rates, and
+ * limits are preserved, so re-enabling resumes the move from the
+ * current value. A ramp is enabled by default after rampg_init().
+ *
+ * @pre @p ramp has been initialised with rampg_init().
+ *
+ * @param ramp          Pointer to ramp instance.
+ * @param enabled       true to enable, false to disable.
+ */
+void rampg_set_enabled(rampg_t *ramp, bool enabled);
+
+/**
  * @brief Advance the ramp by @p dt seconds.
  *
  * Moves the output value toward the effective target (target clamped
@@ -183,6 +199,16 @@ float rampg_update(rampg_t *ramp, float dt);
  * @return              Current output value.
  */
 float rampg_get(const rampg_t *ramp);
+
+/**
+ * @brief Read whether the ramp is enabled without advancing.
+ *
+ * @pre @p ramp has been initialised with rampg_init().
+ *
+ * @param ramp          Pointer to ramp instance.
+ * @return              true if the ramp is enabled and will move.
+ */
+bool rampg_is_enabled(const rampg_t *ramp);
 
 /**
  * @brief Read the current effective rate without advancing.

@@ -10,6 +10,7 @@ A lightweight, unit-agnostic ramp generator with linear and S-curve (sigmoid) pr
 - **S-curve (sigmoid) profile** with a flat start and end, sized so the peak rate equals the configured rate, via `rampg_set_shape`
 - **Asymmetric rates** with independent rise and fall settings via `rampg_set_rates`
 - **Runtime introspection** with `rampg_get_rate` (effective rate, units/s) and `rampg_get_state` (moving or at-target)
+- **Enable / disable** with `rampg_set_enabled` and `rampg_is_enabled` to hold the output at its current value and resume on demand
 - **Output clamping** to caller-supplied minimum and maximum limits, applied on every update
 - **Unit-agnostic** plain `float` output. Caller decides the meaning (volts, hertz, amps, RPM, etc.)
 - **Zero allocation** with caller-owned `rampg_t` storage (stack, static, or embedded in a larger struct)
@@ -174,12 +175,17 @@ float rampg_get(const rampg_t *ramp);
 bool  rampg_at_target(const rampg_t *ramp);
 float rampg_get_rate(const rampg_t *ramp);
 rampg_state_t rampg_get_state(const rampg_t *ramp);
+void  rampg_set_enabled(rampg_t *ramp, bool enabled);
+bool  rampg_is_enabled(const rampg_t *ramp);
+```
 
 `rampg_update` advances the output toward the effective target (the stored target clamped to the active limits) using the configured shape, then re-clamps to the active limits. In LINEAR shape it steps by `rate * dt` and snaps to the effective target when the step would overshoot. In SIGMOID shape it follows a quintic S-curve re-planned from the current value whenever the target, limits, or rates change, sized so the peak rate equals the configured rate. It returns the updated output value.
 
 `rampg_at_target` reports whether the output equals the effective target. This uses exact float equality, which is reachable because `rampg_update` explicitly snaps to the effective target when the step would overshoot.
 
 `rampg_get_rate` returns the effective rate in units per second (signed). For LINEAR this is the configured rise or fall rate while moving and zero when at rest; for SIGMOID it is the instantaneous slope of the planned S-curve, peaking at the configured rate mid-move. `rampg_get_state` returns `RAMPG_STATE_MOVING` or `RAMPG_STATE_AT_TARGET`, where `rampg_at_target` is the boolean form of `RAMPG_STATE_AT_TARGET`. Both getters evaluate against the effective target (the stored target clamped to the active limits), so a target that lies outside the limits resolves to the clamped value and the ramp reports at-target with a zero rate once it reaches it.
+
+`rampg_set_enabled` and `rampg_is_enabled` gate the ramp. A disabled ramp holds its output: `rampg_update` returns the value unchanged and `rampg_get_rate` reads zero. The target, rates, limits, and shape are preserved, so re-enabling resumes the move from the current value. `rampg_at_target` and `rampg_get_state` ignore the flag, so a disabled ramp mid-move still reports moving and one at rest reports at-target. A ramp is enabled by default after `rampg_init`, and `rampg_reset` does not change the flag.
 
 For per-function documentation, see the Doxygen comments in `include/rampg.h`.
 
@@ -199,10 +205,11 @@ typedef struct {
         float move_duration; /* Planned move duration in seconds */
         float move_elapsed;  /* Elapsed move time in seconds */
         bool plan_valid;     /* True when the planned move is current */
+        bool enabled;        /* True when the ramp is enabled */
 } rampg_t;
 ```
 
-`rampg_t` is a plain aggregate with no pointers. It is safe to `memcpy`, embed in a larger struct, or place in shared memory provided the usual thread-safety caveats are respected.
+`rampg_t` is a plain aggregate with no pointers. It is safe to `memcpy`, embed in a larger struct, or place in shared memory provided the usual thread-safety caveats are respected. New fields are appended at the end, so existing field offsets and the struct size are stable across versions.
 
 ### Configuration macros
 

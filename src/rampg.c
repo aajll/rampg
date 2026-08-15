@@ -77,6 +77,7 @@ rampg_init(rampg_t *ramp, float initial)
         ramp->limit_min = RAMPG_LIMIT_MIN;
         ramp->limit_max = RAMPG_LIMIT_MAX;
         ramp->shape = RAMPG_DEFAULT_SHAPE;
+        ramp->enabled = true;
         ramp->move_start = initial;
         ramp->move_end = initial;
         ramp->move_duration = 0.0f;
@@ -133,9 +134,19 @@ rampg_set_shape(rampg_t *ramp, rampg_shape_t shape)
         ramp->shape = shape;
 }
 
+void
+rampg_set_enabled(rampg_t *ramp, bool enabled)
+{
+        ramp->enabled = enabled;
+}
+
 float
 rampg_update(rampg_t *ramp, float dt)
 {
+        if (!ramp->enabled) {
+                return ramp->value;
+        }
+
         float effective = clamp(ramp->target, ramp->limit_min, ramp->limit_max);
 
         if (ramp->shape == RAMPG_SHAPE_SIGMOID) {
@@ -186,9 +197,19 @@ rampg_get(const rampg_t *ramp)
         return ramp->value;
 }
 
+bool
+rampg_is_enabled(const rampg_t *ramp)
+{
+        return ramp->enabled;
+}
+
 float
 rampg_get_rate(const rampg_t *ramp)
 {
+        if (!ramp->enabled) {
+                return 0.0f;
+        }
+
         float effective = clamp(ramp->target, ramp->limit_min, ramp->limit_max);
 
         if (ramp->value == effective) {
