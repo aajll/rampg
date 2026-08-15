@@ -13,6 +13,12 @@
 
 /* ================ DEFINES ================================================= */
 
+/* Peak of the normalized quintic smoothstep derivative s'(u), attained at
+ * u = 0.5. The move duration is scaled by this so that the S-curve's peak
+ * rate equals the configured rate. See docs/s-curve-profile.md for the
+ * derivation. */
+#define SIGMOID_PEAK_SLOPE 1.875f
+
 /* ================ STRUCTURES ============================================== */
 
 /* ================ TYPEDEFS ================================================ */
@@ -37,6 +43,16 @@ clamp(float val, float min, float max)
         return val;
 }
 
+/*
+ * Normalized quintic smoothstep S(u) = 6u^5 - 15u^4 + 10u^3, mapping
+ * u in [0, 1] to [0, 1]. It satisfies S(0) = 0, S(1) = 1 and
+ * S'(0) = S'(1) = 0, so the rate is continuous at the start and end
+ * of a move. Being a quintic it also has S''(0) = S''(1) = 0, which
+ * keeps the acceleration continuous as well (a C^2 S-curve). The
+ * u > 0.5 branch computes S(1 - v) = 1 - S(v) with the small
+ * v = 1 - u, avoiding the cancellation the direct polynomial suffers
+ * near u = 1. See docs/s-curve-profile.md for the full derivation.
+ */
 static float
 sigmoid_s(float u)
 {
@@ -48,6 +64,13 @@ sigmoid_s(float u)
         return u * u * u * (10.0f - (u * (15.0f - (6.0f * u))));
 }
 
+/*
+ * Plans a sigmoid move from the current value to the clamped target.
+ * Because the output follows the normalized quintic S(u), the peak rate
+ * is (end - start) * SIGMOID_PEAK_SLOPE / duration, and the duration
+ * below is chosen so that this peak equals the configured rate.
+ * See docs/s-curve-profile.md.
+ */
 static void
 sigmoid_plan(rampg_t *ramp)
 {
@@ -58,9 +81,13 @@ sigmoid_plan(rampg_t *ramp)
 
         ramp->move_start = ramp->value;
         ramp->move_end = end;
-        /* Peak slope of the quintic is 1.875, so this makes the peak
-         * rate equal to the configured rate. */
-        ramp->move_duration = 1.875f * dist / rate;
+        /*
+         * Peak rate of the move is (end - start) * max(s') / duration, with
+         * max(s') = SIGMOID_PEAK_SLOPE at u = 0.5. Solving for duration so
+         * that the peak rate equals the configured rate gives
+         * duration = SIGMOID_PEAK_SLOPE * dist / rate.
+         */
+        ramp->move_duration = SIGMOID_PEAK_SLOPE * dist / rate;
         ramp->move_elapsed = 0.0f;
         ramp->plan_valid = true;
 }
@@ -221,6 +248,11 @@ rampg_get_rate(const rampg_t *ramp)
                         return 0.0f;
                 }
                 float u = ramp->move_elapsed / ramp->move_duration;
+                /*
+                 * d/du of the quintic S(u) = 6u^5 - 15u^4 + 10u^3 is
+                 * S'(u) = 30u^2(1 - u)^2; chain rule gives rate =
+                 * (end - start) * S'(u) / duration.
+                 */
                 float dsdu = 30.0f * u * u * (1.0f - u) * (1.0f - u);
                 return (ramp->move_end - ramp->move_start) * dsdu
                        / ramp->move_duration;

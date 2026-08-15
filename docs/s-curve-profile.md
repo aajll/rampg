@@ -26,6 +26,48 @@ where `s` is the standard quintic smoothstep. This particular polynomial has thr
 - The first derivative is zero at both `u = 0` and `u = 1`. The output therefore starts and ends at **zero velocity**.
 - The second derivative is also zero at both ends. The output starts and ends at **zero acceleration**, so the rate itself changes smoothly rather than kinking.
 
+### Deriving the quintic
+
+The goal is one polynomial that carries a move from 0 to 1 over the unit interval $u \in [0, 1]$ while keeping the motion smooth at both ends. The requirements on $s(u)$ are:
+
+- $s(0) = 0$ and $s(1) = 1$: the move starts at the beginning and ends at the end.
+- $s'(0) = 0$ and $s'(1) = 0$: the move starts and ends at zero velocity, removing the velocity step of the linear profile.
+
+Four conditions determine a cubic, and solving them gives the familiar smoothstep $s(u) = 3u^2 - 2u^3$. That curve is $C^1$, but $s''(0) = 6$ and $s''(1) = -6$, so the acceleration jumps from zero to a finite value at each end and the rate has a kink at the boundary.
+
+To keep the acceleration continuous as well, two more conditions are added: $s''(0) = 0$ and $s''(1) = 0$. Six conditions determine a quintic, $s(u) = au^5 + bu^4 + cu^3 + du^2 + eu + f$:
+
+$$
+\begin{aligned}
+s(0) = 0 &\Rightarrow f = 0 \\
+s'(0) = 0 &\Rightarrow e = 0 \\
+s''(0) = 0 &\Rightarrow 2d = 0 \\
+s''(1) = 0 &\Rightarrow 20a + 12b + 6c = 0 \\
+s'(1) = 0 &\Rightarrow 5a + 4b + 3c = 0 \\
+s(1) = 1 &\Rightarrow a + b + c = 1
+\end{aligned}
+$$
+
+Solving gives $a = 6$, $b = -15$, $c = 10$, and
+
+$$
+s(u) = 6u^5 - 15u^4 + 10u^3
+$$
+
+which is exactly the polynomial evaluated in `sigmoid_s`. Its first derivative factors as
+
+$$
+s'(u) = 30u^4 - 60u^3 + 30u^2 = 30u^2(1 - u)^2
+$$
+
+and its second derivative, $s''(u) = 60u(1-u)(1-2u)$, vanishes at both ends, confirming $C^2$ continuity. The first derivative is a product of $u^2$ and $(1-u)^2$, so it is symmetric about $u = 1/2$ and its maximum sits at the midpoint:
+
+$$
+s'(1/2) = 30 \cdot \tfrac{1}{4} \cdot \tfrac{1}{4} = \tfrac{30}{16} = 1.875
+$$
+
+That is the `SIGMOID_PEAK_SLOPE` constant in the source and the origin of the 1.875× time penalty. The implementation evaluates the two halves separately, computing $S(1 - v) = 1 - S(v)$ with the small $v = 1 - u$ when $u > 0.5$, which avoids the catastrophic cancellation the direct polynomial suffers near $u = 1$.
+
 ### Peak-rate sizing
 
 The peak slope of the quintic is exactly `1.875` (at `u = 0.5`). To make the move's peak rate equal the configured rate, the move duration is set to
