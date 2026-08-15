@@ -9,6 +9,7 @@ A lightweight, unit-agnostic ramp generator with linear and S-curve (sigmoid) pr
 - **Linear ramping** between a current value and a configurable target at a caller-specified rate
 - **S-curve (sigmoid) profile** with a flat start and end, sized so the peak rate equals the configured rate, via `rampg_set_shape`
 - **Asymmetric rates** with independent rise and fall settings via `rampg_set_rates`
+- **Runtime introspection** with `rampg_get_rate` (effective rate, units/s) and `rampg_get_state` (moving or at-target)
 - **Output clamping** to caller-supplied minimum and maximum limits, applied on every update
 - **Unit-agnostic** plain `float` output. Caller decides the meaning (volts, hertz, amps, RPM, etc.)
 - **Zero allocation** with caller-owned `rampg_t` storage (stack, static, or embedded in a larger struct)
@@ -114,6 +115,19 @@ rampg_set_target(&vbus, 400.0f);
 
 For the design, peak-rate sizing, re-planning behaviour, and generated graphs, see the [S-curve profile documentation](docs/s-curve-profile.md).
 
+### Monitoring ramp progress
+
+`rampg_get_rate` and `rampg_get_state` expose live progress without advancing the ramp. In a sigmoid move the rate starts and ends at zero and peaks at the configured rate mid-move, which is useful for dashboards and for validating a move before acting on it.
+
+```c
+float v = rampg_update(&vbus, 0.001f);
+if (rampg_get_state(&vbus) == RAMPG_STATE_MOVING) {
+        /* ramping at rampg_get_rate(&vbus) units/s */
+} else {
+        /* at rest at the effective target */
+}
+```
+
 ## Building
 
 ```sh
@@ -158,11 +172,14 @@ void rampg_set_shape(rampg_t *ramp, rampg_shape_t shape);
 float rampg_update(rampg_t *ramp, float dt);
 float rampg_get(const rampg_t *ramp);
 bool  rampg_at_target(const rampg_t *ramp);
-```
+float rampg_get_rate(const rampg_t *ramp);
+rampg_state_t rampg_get_state(const rampg_t *ramp);
 
 `rampg_update` advances the output toward the effective target (the stored target clamped to the active limits) using the configured shape, then re-clamps to the active limits. In LINEAR shape it steps by `rate * dt` and snaps to the effective target when the step would overshoot. In SIGMOID shape it follows a quintic S-curve re-planned from the current value whenever the target, limits, or rates change, sized so the peak rate equals the configured rate. It returns the updated output value.
 
 `rampg_at_target` reports whether the output equals the effective target. This uses exact float equality, which is reachable because `rampg_update` explicitly snaps to the effective target when the step would overshoot.
+
+`rampg_get_rate` returns the effective rate in units per second (signed). For LINEAR this is the configured rise or fall rate while moving and zero when at rest; for SIGMOID it is the instantaneous slope of the planned S-curve, peaking at the configured rate mid-move. `rampg_get_state` returns `RAMPG_STATE_MOVING` or `RAMPG_STATE_AT_TARGET`, where `rampg_at_target` is the boolean form of `RAMPG_STATE_AT_TARGET`. Both getters evaluate against the effective target (the stored target clamped to the active limits), so a target that lies outside the limits resolves to the clamped value and the ramp reports at-target with a zero rate once it reaches it.
 
 For per-function documentation, see the Doxygen comments in `include/rampg.h`.
 
@@ -221,6 +238,8 @@ The contract for each function is:
 | `rampg_update`     | `ramp` has been initialised. `dt >= 0`.                            |
 | `rampg_get`        | `ramp` has been initialised.                                       |
 | `rampg_at_target`  | `ramp` has been initialised.                                       |
+| `rampg_get_rate`   | `ramp` has been initialised.                                       |
+| `rampg_get_state`  | `ramp` has been initialised.                                       |
 
 Inputs that violate these preconditions invoke undefined behaviour in the same sense as any C library function. Validate at the call site if your application cannot guarantee them.
 
@@ -276,6 +295,6 @@ rampg is a single-axis control primitive. The following are explicitly out of sc
 | **Floating point**    | All values are single-precision `float`, suitable for embedded targets.                                                                                                  |
 | **Time source**       | Caller supplies `dt` in seconds. The library has no dependency on clocks or OS.                                                                                          |
 | **WCET**              | Execution time is bounded and constant per call. No loops on input data; arithmetic is fixed.                                                                            |
-| **Limits and target** | The stored target is unclamped. `rampg_update` and `rampg_at_target` evaluate against the target clamped to the active limits, so widening limits later recovers intent. |
+| **Limits and target** | The stored target is unclamped. `rampg_update`, `rampg_at_target`, `rampg_get_rate`, and `rampg_get_state` evaluate against the target clamped to the active limits, so widening limits later recovers intent. |
 | **Configuration**     | Override `RAMPG_DEFAULT_RATE`, `RAMPG_LIMIT_MIN`, `RAMPG_LIMIT_MAX`, and `RAMPG_DEFAULT_SHAPE` before including `rampg.h`, or via a toolchain-level `-D` flag. |
 | **Version header**    | `rampg_version.h` is auto-generated by the Meson build and placed in the output build folder.                                                                            |

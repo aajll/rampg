@@ -859,6 +859,145 @@ TEST_CASE(test_sigmoid_zero_dt_no_progress)
         TEST_ASSERT(!rampg_at_target(&ramp));
 }
 
+/* ================ Introspection (rate and state) ==========================
+ */
+
+TEST_CASE(test_get_rate_linear_rising)
+{
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_target(&r, 100.0f);
+
+        rampg_update(&r, 0.1f);
+        TEST_ASSERT(!rampg_at_target(&r));
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 100.0f));
+}
+
+TEST_CASE(test_get_rate_linear_falling)
+{
+        rampg_t r;
+        rampg_init(&r, 100.0f);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_target(&r, 0.0f);
+
+        rampg_update(&r, 0.1f);
+        TEST_ASSERT(!rampg_at_target(&r));
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), -100.0f));
+}
+
+TEST_CASE(test_get_rate_linear_at_rest)
+{
+        rampg_t r;
+        rampg_init(&r, 5.0f);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_target(&r, 5.0f);
+
+        TEST_ASSERT(rampg_at_target(&r));
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 0.0f));
+}
+
+TEST_CASE(test_get_state_linear)
+{
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_rate(&r, 100.0f);
+        rampg_set_target(&r, 100.0f);
+
+        /* Not yet advanced: moving toward the target. */
+        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_MOVING);
+
+        rampg_update(&r, 0.1f);
+        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_MOVING);
+
+        int steps = 0;
+        while (!rampg_at_target(&r) && steps < 100000) {
+                rampg_update(&r, 0.01f);
+                steps++;
+        }
+        TEST_ASSERT(rampg_at_target(&r));
+        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_AT_TARGET);
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 0.0f));
+}
+
+TEST_CASE(test_get_rate_sigmoid_zero_before_update)
+{
+        /* No update has planned the move, so the rate is zero and the
+         * ramp is moving toward the target. */
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rate(&ramp, 100.0f);
+        rampg_set_target(&ramp, 100.0f);
+
+        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_MOVING);
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&ramp), 0.0f));
+}
+
+TEST_CASE(test_get_rate_sigmoid_peak_at_midpoint)
+{
+        /* T = 1.875 s. dt = 2^-9 divides the half-duration exactly, so
+         * after 480 steps u = 0.5 and the rate equals the configured
+         * peak rate. */
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rate(&ramp, 100.0f);
+        rampg_set_target(&ramp, 100.0f);
+
+        for (int i = 0; i < 480; i++) {
+                rampg_update(&ramp, 0.001953125f);
+        }
+
+        TEST_ASSERT(!rampg_at_target(&ramp));
+        TEST_ASSERT(FLOAT_NEAR(rampg_get_rate(&ramp), 100.0f, 1e-3f));
+}
+
+TEST_CASE(test_get_rate_sigmoid_zero_at_target)
+{
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rate(&ramp, 100.0f);
+        rampg_set_target(&ramp, 100.0f);
+
+        int steps = 0;
+        while (!rampg_at_target(&ramp) && steps < 100000) {
+                rampg_update(&ramp, 0.001f);
+                steps++;
+        }
+
+        TEST_ASSERT(rampg_at_target(&ramp));
+        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_AT_TARGET);
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&ramp), 0.0f));
+}
+
+TEST_CASE(test_get_state_sigmoid_clamped_target)
+{
+        /* A target above the upper limit resolves to the clamped value.
+         * The ramp moves to the clamped value, then reports at-target
+         * with a zero rate. */
+        rampg_t ramp;
+        rampg_init(&ramp, 0.0f);
+        rampg_set_shape(&ramp, RAMPG_SHAPE_SIGMOID);
+        rampg_set_rate(&ramp, 100.0f);
+        rampg_set_limits(&ramp, 0.0f, 80.0f);
+        rampg_set_target(&ramp, 200.0f);
+
+        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_MOVING);
+
+        int steps = 0;
+        while (!rampg_at_target(&ramp) && steps < 100000) {
+                rampg_update(&ramp, 0.001f);
+                steps++;
+        }
+
+        TEST_ASSERT(rampg_at_target(&ramp));
+        TEST_ASSERT(FLOAT_EQ(rampg_get(&ramp), 80.0f));
+        TEST_ASSERT(rampg_get_state(&ramp) == RAMPG_STATE_AT_TARGET);
+        TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&ramp), 0.0f));
+}
+
 /* ================ Runner ===================================================
  */
 
@@ -964,6 +1103,19 @@ main(void)
                  "test_sigmoid_zero_distance_move");
         run_test(test_sigmoid_zero_dt_no_progress,
                  "test_sigmoid_zero_dt_no_progress");
+        /* Introspection (rate and state) */
+        run_test(test_get_rate_linear_rising, "test_get_rate_linear_rising");
+        run_test(test_get_rate_linear_falling, "test_get_rate_linear_falling");
+        run_test(test_get_rate_linear_at_rest, "test_get_rate_linear_at_rest");
+        run_test(test_get_state_linear, "test_get_state_linear");
+        run_test(test_get_rate_sigmoid_zero_before_update,
+                 "test_get_rate_sigmoid_zero_before_update");
+        run_test(test_get_rate_sigmoid_peak_at_midpoint,
+                 "test_get_rate_sigmoid_peak_at_midpoint");
+        run_test(test_get_rate_sigmoid_zero_at_target,
+                 "test_get_rate_sigmoid_zero_at_target");
+        run_test(test_get_state_sigmoid_clamped_target,
+                 "test_get_state_sigmoid_clamped_target");
         /* SC integration scenarios */
         run_test(test_sc_precharge_scenario, "test_sc_precharge_scenario");
         run_test(test_sc_frequency_ramp_scenario,

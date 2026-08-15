@@ -39,6 +39,18 @@ typedef enum {
 /**
  * @brief Ramp generator state.
  *
+ * @details
+ * - ::RAMPG_STATE_MOVING    output is ramping toward the effective target.
+ * - ::RAMPG_STATE_AT_TARGET output is at rest at the effective target.
+ */
+typedef enum {
+        RAMPG_STATE_MOVING,
+        RAMPG_STATE_AT_TARGET,
+} rampg_state_t;
+
+/**
+ * @brief Ramp generator state.
+ *
  * Plain struct — caller owns storage (stack, static, or embedded in a
  * larger struct). Initialise with rampg_init() before use.
  */
@@ -173,6 +185,24 @@ float rampg_update(rampg_t *ramp, float dt);
 float rampg_get(const rampg_t *ramp);
 
 /**
+ * @brief Read the current effective rate without advancing.
+ *
+ * For LINEAR shape this is the configured rise or fall rate while
+ * moving, or zero when at rest. For SIGMOID shape this is the
+ * instantaneous slope of the planned S-curve: it peaks at the
+ * configured rate mid-move and falls to zero at the end. A target,
+ * rate, limit, or shape change invalidates the plan, so the rate
+ * reads zero until the next rampg_update() re-plans from the
+ * current value.
+ *
+ * @pre @p ramp has been initialised with rampg_init().
+ *
+ * @param ramp          Pointer to ramp instance.
+ * @return              Effective rate in units per second (signed).
+ */
+float rampg_get_rate(const rampg_t *ramp);
+
+/**
  * @brief Check whether the output has reached the effective target.
  *
  * The effective target is the stored target clamped to the current
@@ -184,6 +214,20 @@ float rampg_get(const rampg_t *ramp);
  * @return              true if value == effective target.
  */
 bool rampg_at_target(const rampg_t *ramp);
+
+/**
+ * @brief Read the current ramp state without advancing.
+ *
+ * RAMPG_STATE_MOVING while the output is ramping toward the effective
+ * target, RAMPG_STATE_AT_TARGET when the output is at rest at the
+ * effective target (the stored target clamped to the current limits).
+ *
+ * @pre @p ramp has been initialised with rampg_init().
+ *
+ * @param ramp          Pointer to ramp instance.
+ * @return              Current ramp state.
+ */
+rampg_state_t rampg_get_state(const rampg_t *ramp);
 
 /**
  * @brief Snap the output to @p value immediately (bypass ramp).

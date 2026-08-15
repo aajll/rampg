@@ -186,11 +186,47 @@ rampg_get(const rampg_t *ramp)
         return ramp->value;
 }
 
+float
+rampg_get_rate(const rampg_t *ramp)
+{
+        float effective = clamp(ramp->target, ramp->limit_min, ramp->limit_max);
+
+        if (ramp->value == effective) {
+                return 0.0f;
+        }
+
+        if (ramp->shape == RAMPG_SHAPE_SIGMOID) {
+                if (!ramp->plan_valid || (ramp->move_duration <= 0.0f)) {
+                        return 0.0f;
+                }
+                float u = ramp->move_elapsed / ramp->move_duration;
+                float dsdu = 30.0f * u * u * (1.0f - u) * (1.0f - u);
+                return (ramp->move_end - ramp->move_start) * dsdu
+                       / ramp->move_duration;
+        }
+
+        if (effective > ramp->value) {
+                return ramp->rise_rate;
+        }
+        return -ramp->fall_rate;
+}
+
 bool
 rampg_at_target(const rampg_t *ramp)
 {
         float effective = clamp(ramp->target, ramp->limit_min, ramp->limit_max);
         return ramp->value == effective;
+}
+
+rampg_state_t
+rampg_get_state(const rampg_t *ramp)
+{
+        float effective = clamp(ramp->target, ramp->limit_min, ramp->limit_max);
+
+        if (ramp->value == effective) {
+                return RAMPG_STATE_AT_TARGET;
+        }
+        return RAMPG_STATE_MOVING;
 }
 
 void
