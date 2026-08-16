@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-08-16
+
+### Fixed
+- Linear ramps now retain `rate * dt` movement that is below the resolution of the current output. The visible value advances once enough movement has accumulated for the next representable float, without exceeding the cumulative configured motion or jumping directly to a distant target. Previously that movement was rounded away on every update, so a ramp whose step was below the resolution of its output never moved while `rampg_get_state` reported `RAMPG_STATE_MOVING`. This widens the workable ratio of output magnitude to per-update step from about `1e7` to about `1e14`. Beyond that ratio the budget itself cannot accumulate and the output still holds.
+
 ## [0.2.0]
 
 ### Added

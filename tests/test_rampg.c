@@ -4,6 +4,7 @@
  */
 
 #include "rampg.h"
+#include <float.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -443,6 +444,195 @@ TEST_CASE(test_small_dt_precision)
 
         TEST_ASSERT(FLOAT_EQ(rampg_get(&r), 1000.0f));
         TEST_ASSERT(rampg_at_target(&r));
+}
+
+TEST_CASE(test_linear_subresolution_step_does_not_jump_to_target)
+{
+        const float start = 1e9f;
+        const float target = 2e9f;
+        const float rate = 1.0f;
+        const float dt = 1e-3f;
+        const float step = rate * dt;
+        rampg_t r;
+
+        rampg_init(&r, 0.0f);
+        rampg_set_limits(&r, 0.0f, 1e10f);
+        rampg_reset(&r, start);
+        rampg_set_rate(&r, rate);
+        rampg_set_target(&r, target);
+
+        /* step is far below the ULP of start (~64). The first update holds
+         * instead of replacing the requested movement with a target jump. */
+        TEST_ASSERT(rampg_update(&r, dt) == start);
+        TEST_ASSERT(!rampg_at_target(&r));
+        TEST_ASSERT(rampg_get_rate(&r) == rate);
+        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_MOVING);
+
+        int ticks = 1;
+        while ((rampg_get(&r) == start) && (ticks < 100000)) {
+                rampg_update(&r, dt);
+                ticks++;
+        }
+
+        double paid = (double)ticks * (double)step;
+        double moved = (double)rampg_get(&r) - (double)start;
+        TEST_ASSERT(ticks < 100000);
+        TEST_ASSERT(rampg_get(&r) == nextafterf(start, target));
+        TEST_ASSERT(moved <= paid);
+        TEST_ASSERT(!rampg_at_target(&r));
+}
+
+TEST_CASE(test_linear_accumulates_subresolution_steps)
+{
+        const float start = 1000.0f;
+        const float rate = 0.01f;
+        const float dt = 0.001f;
+        const float target = 1001.0f;
+        const float next = nextafterf(start, target);
+        rampg_t r;
+
+        rampg_init(&r, 0.0f);
+        rampg_set_limits(&r, 0.0f, 2000.0f);
+        rampg_reset(&r, start);
+        rampg_set_rate(&r, rate);
+        rampg_set_target(&r, target);
+
+        int ticks = 0;
+        while ((rampg_get(&r) == start) && (ticks < 100)) {
+                rampg_update(&r, dt);
+                ticks++;
+        }
+
+        float budget = (float)ticks * rate * dt;
+        TEST_ASSERT(ticks > 1 && ticks < 100);
+        TEST_ASSERT(rampg_get(&r) == next);
+        TEST_ASSERT(budget >= (next - start));
+        TEST_ASSERT(!rampg_at_target(&r));
+}
+
+TEST_CASE(test_linear_discards_subresolution_budget_on_reversal)
+{
+        const float start = 1000.0f;
+        const float rate = 0.01f;
+        const float dt = 0.001f;
+        rampg_t r;
+
+        rampg_init(&r, 0.0f);
+        rampg_set_limits(&r, 0.0f, 2000.0f);
+        rampg_reset(&r, start);
+        rampg_set_rate(&r, rate);
+        rampg_set_target(&r, 1001.0f);
+
+        for (int i = 0; i < 3; i++) {
+                TEST_ASSERT(rampg_update(&r, dt) == start);
+        }
+
+        rampg_set_target(&r, 999.0f);
+        for (int i = 0; i < 6; i++) {
+                TEST_ASSERT(rampg_update(&r, dt) == start);
+        }
+        float lower = nextafterf(start, 999.0f);
+        TEST_ASSERT(rampg_update(&r, dt) == lower);
+
+        rampg_set_target(&r, 1001.0f);
+        for (int i = 0; i < 6; i++) {
+                TEST_ASSERT(rampg_update(&r, dt) == lower);
+        }
+        TEST_ASSERT(rampg_update(&r, dt) == start);
+}
+
+TEST_CASE(test_linear_subresolution_budget_preserves_average_rate)
+{
+        const float start = 1000.0f;
+        const float rate = 0.01f;
+        const float dt = 0.001f;
+        const float target = 1001.0f;
+        const int updates = 10000;
+        const float step = rate * dt;
+        double budget = 0.0;
+        rampg_t r;
+
+        rampg_init(&r, 0.0f);
+        rampg_set_limits(&r, 0.0f, 2000.0f);
+        rampg_reset(&r, start);
+        rampg_set_rate(&r, rate);
+        rampg_set_target(&r, target);
+
+        for (int i = 0; i < updates; i++) {
+                rampg_update(&r, dt);
+                budget += (double)step;
+
+                float value = rampg_get(&r);
+                double moved = (double)value - (double)start;
+                float quantum = nextafterf(value, target) - value;
+                TEST_ASSERT(moved <= budget);
+                TEST_ASSERT((budget - moved) <= (double)quantum);
+        }
+        TEST_ASSERT(!rampg_at_target(&r));
+}
+
+TEST_CASE(test_linear_subresolution_budget_lands_exactly)
+{
+        const float start = 1000.0f;
+        const float rate = 0.01f;
+        const float dt = 0.001f;
+        const float target = nextafterf(start, INFINITY);
+        rampg_t r;
+
+        rampg_init(&r, 0.0f);
+        rampg_set_limits(&r, 0.0f, 2000.0f);
+        rampg_reset(&r, start);
+        rampg_set_rate(&r, rate);
+        rampg_set_target(&r, target);
+
+        int ticks = 0;
+        while (!rampg_at_target(&r) && (ticks < 100)) {
+                rampg_update(&r, dt);
+                ticks++;
+        }
+
+        TEST_ASSERT(ticks > 1 && ticks < 100);
+        TEST_ASSERT(rampg_get(&r) == target);
+        TEST_ASSERT(rampg_get_rate(&r) == 0.0f);
+}
+
+TEST_CASE(test_linear_rate_product_underflow_holds)
+{
+        rampg_t r;
+        rampg_init(&r, 0.0f);
+        rampg_set_limits(&r, 0.0f, 1.0f);
+        rampg_set_rate(&r, FLT_MIN);
+        rampg_set_target(&r, 1.0f);
+
+        TEST_ASSERT(rampg_update(&r, FLT_MIN) == 0.0f);
+        TEST_ASSERT(!rampg_at_target(&r));
+        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_MOVING);
+}
+
+TEST_CASE(test_linear_step_below_budget_resolution_holds)
+{
+        /*
+         * The gap between representable floats at 1e9 is 64. A step of
+         * 2^-21 can only accumulate to about step * 2^24 = 8 before the
+         * budget's own resolution stops it growing, so it never pays for
+         * a representable step. The documented behaviour is to hold the
+         * output and keep reporting a move, never to snap to the target.
+         */
+        const float start = 1e9f;
+        const float dt = 1.0f;
+        rampg_t r;
+
+        rampg_init(&r, 0.0f);
+        rampg_set_limits(&r, 0.0f, 1e10f);
+        rampg_reset(&r, start);
+        rampg_set_rate(&r, ldexpf(1.0f, -21));
+        rampg_set_target(&r, 2e9f);
+
+        for (int i = 0; i < 1000; i++) {
+                TEST_ASSERT(rampg_update(&r, dt) == start);
+        }
+        TEST_ASSERT(!rampg_at_target(&r));
+        TEST_ASSERT(rampg_get_state(&r) == RAMPG_STATE_MOVING);
 }
 
 TEST_CASE(test_sc_precharge_scenario)
@@ -1140,9 +1330,16 @@ TEST_CASE(test_scurve_shape_change_to_linear_mid_move)
         float mid = rampg_get(&r);
         TEST_ASSERT(mid > 0.0f);
 
+        float rate_before = rampg_get_rate(&r);
+        rampg_set_shape(&r, RAMPG_SHAPE_SCURVE);
+        TEST_ASSERT(rampg_get_rate(&r) == rate_before);
+
         rampg_set_shape(&r, RAMPG_SHAPE_LINEAR);
         /* LINEAR resumes at the full configured rate. */
         TEST_ASSERT(FLOAT_EQ(rampg_get_rate(&r), 100.0f));
+
+        float first = rampg_update(&r, 0.001f);
+        TEST_ASSERT(FLOAT_NEAR(first - mid, 0.1f, 1e-4f));
 
         int ticks = 0;
         while (!rampg_at_target(&r) && (ticks < 100000)) {
@@ -1782,6 +1979,20 @@ main(void)
         run_test(test_very_large_dt, "test_very_large_dt");
         run_test(test_small_dt_accumulation, "test_small_dt_accumulation");
         run_test(test_small_dt_precision, "test_small_dt_precision");
+        run_test(test_linear_subresolution_step_does_not_jump_to_target,
+                 "test_linear_subresolution_step_does_not_jump_to_target");
+        run_test(test_linear_accumulates_subresolution_steps,
+                 "test_linear_accumulates_subresolution_steps");
+        run_test(test_linear_discards_subresolution_budget_on_reversal,
+                 "test_linear_discards_subresolution_budget_on_reversal");
+        run_test(test_linear_subresolution_budget_preserves_average_rate,
+                 "test_linear_subresolution_budget_preserves_average_rate");
+        run_test(test_linear_subresolution_budget_lands_exactly,
+                 "test_linear_subresolution_budget_lands_exactly");
+        run_test(test_linear_rate_product_underflow_holds,
+                 "test_linear_rate_product_underflow_holds");
+        run_test(test_linear_step_below_budget_resolution_holds,
+                 "test_linear_step_below_budget_resolution_holds");
 
         /* S-curve */
         run_test(test_scurve_reaches_target_exactly,

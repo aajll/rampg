@@ -63,8 +63,8 @@ typedef enum {
  * the defaults are not all zero.
  *
  * Every field except @c vel is caller-facing configuration and may be
- * read directly. @c vel is internal and is maintained by rampg_update();
- * read the output rate with rampg_get_rate() rather than reading it.
+ * read directly. @c vel is internal profile state maintained by the
+ * implementation; read the output rate with rampg_get_rate().
  */
 typedef struct {
         float value;         /**< Current output value. */
@@ -75,7 +75,7 @@ typedef struct {
         float fall_accel;    /**< Fall acceleration limit (units/s^2). */
         float limit_min;     /**< Output clamp minimum. */
         float limit_max;     /**< Output clamp maximum. */
-        float vel;           /**< Internal: current output rate. */
+        float vel;           /**< Internal profile state. */
         rampg_shape_t shape; /**< Ramp profile. */
         bool enabled;        /**< True when the ramp is enabled. */
 } rampg_t;
@@ -237,9 +237,18 @@ void rampg_set_enabled(rampg_t *ramp, bool enabled);
  * limits without a further clamp, because it starts inside them and a
  * step never overshoots the effective target.
  *
- * LINEAR steps at the configured rate. SCURVE bounds the output rate by
- * the configured rate and its rate of change by the configured
- * acceleration, easing in and out of the move.
+ * LINEAR accumulates @c rate*dt as a movement budget. When one update
+ * is below the resolution of the output, it holds the visible value
+ * until enough movement is budgeted for the next representable value.
+ * The budget is a @c float as well, so it stops growing once one step
+ * falls below its own resolution. A move keeps progressing while
+ * @c rate*dt stays above about 2^-47 of the output magnitude. Far
+ * below that the budget never reaches one representable step, and the
+ * output holds indefinitely while rampg_get_state() still reports
+ * ::RAMPG_STATE_MOVING.
+ *
+ * SCURVE bounds the output rate by the configured rate and its rate of
+ * change by the configured acceleration, easing in and out of the move.
  *
  * The call is total. It holds the output unchanged, rather than
  * corrupting the state, when @p dt is not a finite value greater than
@@ -280,9 +289,10 @@ bool rampg_is_enabled(const rampg_t *ramp);
  *
  * The value is signed: positive when rising, negative when falling. For
  * LINEAR this is the configured rise or fall rate while moving, and zero
- * at rest. For SCURVE it is the rate the last rampg_update() applied,
- * which eases from zero up to at most the configured rate and back down.
- * A disabled ramp reads zero.
+ * at rest. The visible float may hold between quantised updates while
+ * sub-resolution movement accumulates. For SCURVE this is the rate the
+ * last rampg_update() applied, which eases from zero up to at most the
+ * configured rate and back down. A disabled ramp reads zero.
  *
  * Suitable as a feedforward term: it stays correct across a target,
  * rate, limit, or shape change, because the rate is carried across the

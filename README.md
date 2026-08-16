@@ -24,7 +24,7 @@ A lightweight, unit-agnostic ramp generator with linear and acceleration-limited
 
 - A C11-compatible toolchain
 - A conformant `<stdbool.h>` (the public API uses `bool`)
-- A conformant `<math.h>` providing `sqrtf` and `isfinite` (used by the implementation, not the public header)
+- A conformant `<math.h>` providing `sqrtf`, `isfinite`, and `nextafterf` (used by the implementation, not the public header)
 - IEEE-754 binary32 `float` (every modern embedded target the library targets uses this)
 
 ## Installation
@@ -205,13 +205,13 @@ void  rampg_set_enabled(rampg_t *ramp, bool enabled);
 bool  rampg_is_enabled(const rampg_t *ramp);
 ```
 
-`rampg_update` advances the output toward the effective target (the stored target clamped to the active limits) using the configured shape, and never leaves the active limits. In LINEAR shape it steps by `rate * dt` and snaps to the effective target when the step would overshoot. In SCURVE shape it bounds the output rate by the configured rate and the change in that rate by the configured acceleration, easing in and out of the move. It returns the updated output value.
+`rampg_update` advances the output toward the effective target (the stored target clamped to the active limits) using the configured shape, and never leaves the active limits. In LINEAR shape it accumulates `rate * dt` as a movement budget. When one update is below the resolution of the output, the visible value holds until enough movement has accumulated for the next representable value. The output never moves farther than the cumulative budget, and it lands exactly on the effective target. The budget is a `float` as well, so a step far below the resolution of the output stops the budget growing before it can pay for one representable step; the numerical range note gives the ratio that keeps a move progressing. In SCURVE shape it bounds the output rate by the configured rate and the change in that rate by the configured acceleration, easing in and out of the move. It returns the updated output value.
 
 `rampg_update` is total. Rather than corrupting the ramp state, it holds the output unchanged when `dt` is not a finite value greater than zero, when the effective target is not finite, or when the governing rate (or, under SCURVE, the acceleration) is not greater than zero. The ramp resumes normally on the next update with valid inputs.
 
 `rampg_at_target` reports whether the output equals the effective target. This uses exact float equality, which is reachable because `rampg_update` explicitly snaps to the effective target when the step reaches it.
 
-`rampg_get_rate` returns the signed output rate in units per second. For LINEAR this is the configured rise or fall rate while moving and zero when at rest. For SCURVE it is the rate the last update applied, carried across a target, rate, limit, or shape change, so it is usable directly as a feedforward term. A disabled ramp reads zero.
+`rampg_get_rate` returns the signed output rate in units per second. For LINEAR this is the configured average rise or fall rate while moving and zero when at rest; the visible float may hold between quantised updates. For SCURVE it is the rate the last update applied, carried across a target, rate, limit, or shape change, so it is usable directly as a feedforward term. A disabled ramp reads zero.
 
 `rampg_get_state` returns `RAMPG_STATE_DISABLED` whenever the ramp is disabled, and otherwise `RAMPG_STATE_MOVING` or `RAMPG_STATE_AT_TARGET`. `rampg_at_target` is purely positional and ignores the enabled flag, so a held ramp that has not arrived still reports false there while `rampg_get_state` reports `RAMPG_STATE_DISABLED`. Both evaluate against the effective target, so a target outside the limits resolves to the clamped value and the ramp reports at-target with a zero rate once it reaches it.
 
@@ -306,7 +306,7 @@ rampg works on any C11 toolchain with an IEEE-754 `float`, a conformant `<stdboo
 | C11 toolchain             | Any C99 compiler with a working `<stdbool.h>` will also build but is not exercised by CI. |
 | IEEE-754 binary32 `float` | Universal on real targets.                                                                |
 | `<stdbool.h>` with `bool` | Used in the public API by `rampg_at_target`, `rampg_set_enabled`, and `rampg_is_enabled`. |
-| `<math.h>` with `sqrtf` and `isfinite` | Used by the implementation only, never by the public header. Some hosted toolchains need an explicit `-lm`; the Meson build adds it where required. |
+| `<math.h>` with `sqrtf`, `isfinite`, and `nextafterf` | Used by the implementation only, never by the public header. Some hosted toolchains need an explicit `-lm`; the Meson build adds it where required. |
 
 Targets meeting these requirements are expected to work, including (but not limited to) x86_64, AArch64, ARMv7-M, ARMv8-M, RISC-V, AVR, and the TI C2000 family.
 
@@ -341,8 +341,8 @@ rampg is a single-axis control primitive. The following are explicitly out of sc
 | **Error handling**    | No runtime validation, except that `rampg_update` holds the output on a non-finite time step or target, or a non-positive rate or acceleration. Preconditions are otherwise documented via `@pre`. |
 | **Floating point**    | All values are single-precision `float`, suitable for embedded targets.                                                                                                  |
 | **Time source**       | Caller supplies `dt` in seconds. The library has no dependency on clocks or OS.                                                                                          |
-| **WCET**              | Execution time is bounded and constant per call. No loops on input data; arithmetic is fixed and there is no per-move planning step. The S-curve path evaluates one square root per call, which dominates its cost on a target without hardware support for it; the linear path uses none. |
+| **WCET**              | Execution time is bounded and constant per call. No loops on input data; arithmetic is fixed and there is no per-move planning step. The S-curve path evaluates one square root per call, which dominates its cost on a target without hardware support for it. The linear path may evaluate `nextafterf` when float rounding would spend more than its accumulated movement budget. |
 | **Limits and target** | The stored target is unclamped. `rampg_update`, `rampg_at_target`, `rampg_get_rate`, and `rampg_get_state` evaluate against the target clamped to the active limits, so widening limits later recovers intent. |
 | **Configuration**     | Override `RAMPG_DEFAULT_RATE`, `RAMPG_DEFAULT_ACCEL`, `RAMPG_LIMIT_MIN`, `RAMPG_LIMIT_MAX`, and `RAMPG_DEFAULT_SHAPE` before including `rampg.h`, or via a toolchain-level `-D` flag. |
-| **Numerical range**   | The output accumulates in a `float`. Keep the ratio of output magnitude to per-update step within about `1e6`, or the accumulator cannot represent the step. |
+| **Numerical range**   | The output is a `float`. LINEAR retains sub-resolution movement and emits it as representable output quanta without exceeding the cumulative movement budget. Keep the ratio of output magnitude to per-update step within about `1e6` when the output must change every update. The budget is a `float` too, so it stops growing once one step falls below its own resolution: a move keeps progressing while `rate * dt` stays above about `2^-47` of the output magnitude, roughly `1e-14` of it, and far below that ratio the output holds indefinitely while `rampg_get_state` still reports `RAMPG_STATE_MOVING`. If `rate * dt` itself underflows to zero, the output holds. |
 | **Version header**    | `rampg_version.h` is auto-generated by the Meson build and placed in the output build folder.                                                                            |
