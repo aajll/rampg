@@ -134,19 +134,42 @@ scurve_step(rampg_t *ramp, float target, float rate, float accel, float dt)
 }
 
 /*
- * One constant-rate step toward `target`, snapping rather than
- * overshooting.
+ * One constant-rate step toward `target`. ramp->vel carries signed movement
+ * that has been budgeted but cannot yet be represented in ramp->value.
  */
 static float
-linear_step(const rampg_t *ramp, float target, float rate, float dt)
+linear_step(rampg_t *ramp, float target, float rate, float dt)
 {
         float diff = target - ramp->value;
         float step = rate * dt;
+        /* A reversal starts budgeting from the visible output. */
+        if (((diff > 0.0f) && (ramp->vel < 0.0f))
+            || ((diff < 0.0f) && (ramp->vel > 0.0f))) {
+                ramp->vel = 0.0f;
+        }
+        float budget = absf(ramp->vel) + step;
 
-        if (absf(diff) <= step) {
+        if (absf(diff) <= budget) {
+                ramp->vel = 0.0f;
                 return target;
         }
-        return (diff > 0.0f) ? (ramp->value + step) : (ramp->value - step);
+
+        float next =
+            (diff > 0.0f) ? (ramp->value + budget) : (ramp->value - budget);
+        float applied = absf(next - ramp->value);
+
+        /*
+         * Round toward the current value so the output never spends more
+         * movement than the accumulated budget. Any unpaid fraction is
+         * carried to the next update.
+         */
+        if (applied > budget) {
+                next = nextafterf(next, ramp->value);
+                applied = absf(next - ramp->value);
+        }
+
+        ramp->vel = (diff > 0.0f) ? (budget - applied) : (applied - budget);
+        return next;
 }
 
 /* ================ GLOBAL FUNCTIONS ======================================== */
@@ -231,6 +254,10 @@ rampg_set_shape(rampg_t *ramp, rampg_shape_t shape)
                  * switch instead of restarting from rest.
                  */
                 ramp->vel = rampg_get_rate(ramp);
+        } else if ((ramp->shape == RAMPG_SHAPE_SCURVE)
+                   && (shape == RAMPG_SHAPE_LINEAR)) {
+                /* The S-curve rate is not a linear movement budget. */
+                ramp->vel = 0.0f;
         }
         ramp->shape = shape;
 }
