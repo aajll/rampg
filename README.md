@@ -166,7 +166,7 @@ meson compile -C build
 meson test -C build --verbose
 ```
 
-CI runs the test build under AddressSanitizer (and UndefinedBehaviorSanitizer on Linux) on both Linux and macOS, plus a release build job that matches the configuration a downstream consumer would use.
+CI runs the test build under AddressSanitizer and UndefinedBehaviorSanitizer on Linux, plus a release build job that matches the configuration a downstream consumer would use.
 
 ## API Reference
 
@@ -315,7 +315,6 @@ Targets meeting these requirements are expected to work, including (but not limi
 | Toolchain   | Target       | Status                       |
 | ----------- | ------------ | ---------------------------- |
 | GCC, Clang  | x86_64 Linux | Run in CI under ASan + UBSan |
-| Apple Clang | x86_64 macOS | Run in CI under ASan         |
 | GCC         | AArch64 Linux | Test suite run manually; results identical to x86_64 |
 
 Other architectures from the supported list above are expected to work but are not yet routinely validated. If you bring up rampg on a new target, please report back so the table can be extended.

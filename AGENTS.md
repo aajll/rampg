@@ -115,7 +115,7 @@ Do NOT invent alternative section styles (e.g., `/* ── Section ── */`). 
 
 - Run `meson test -C build` after every change.
 - Add a test case for each bug fix and for each new feature.
-- Tests live in `tests/test_*.c`; all tests must pass on both Linux and macOS (CI matrix).
+- Tests live in `tests/test_*.c`; all tests must pass in CI.
 - Tests must be deterministic. Do not depend on wall-clock time or thread scheduling.
 
 ---

@@ -95,8 +95,7 @@ not invent alternative section styles.
 - Add a test for every new feature.
 - Tests live in `tests/test_*.c` and run under AddressSanitizer in CI
   (plus UndefinedBehaviorSanitizer on Linux).
-- All tests must pass on both Linux and macOS, since CI runs the matrix
-  on both.
+- All tests must pass in CI.
 - Tests must be deterministic. Do not depend on wall-clock time,
   thread scheduling, or uninitialised memory.
 
@@ -134,7 +133,7 @@ the change is needed, not _what_ the diff already shows.
   agreed before implementation.
 - Keep PRs focused. One feature or one fix per PR.
 - The PR description should explain _why_ the change is needed.
-- All CI checks must pass: tests on Linux + macOS under sanitisers,
+- All CI checks must pass: tests under sanitisers,
   release build.
 - If the change is user-visible, add a `CHANGELOG.md` entry under an
   `## [Unreleased]` heading (or update the next release heading if one
