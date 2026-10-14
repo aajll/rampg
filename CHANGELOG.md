@@ -15,6 +15,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - CI installs Meson, Ninja and gcovr with `uv` instead of `pip` and `apt`.
+- The README is a short landing page. `docs/integration.md`, `docs/api.md` and `docs/design.md` hold the integration guide, the API reference and the profile design, replacing the README reference, `docs/s-curve-profile.md` and the Sphinx site. A `rampg docs examples` test compiles every C example in the documentation.
+- `docs/plot_scurve.py` declares its dependencies inline and runs with `uv run docs/plot_scurve.py`.
 
 ## [0.2.1] - 2026-08-16
 

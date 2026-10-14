@@ -46,13 +46,6 @@
 # Meson build output
 build/
 
-# Documentation build output
-docs/_build/
-
-# uv
-docs/.venv/
-docs/uv.lock
-
-# Python bytecode (docs tooling)
+# Python bytecode
 __pycache__/
 *.pyc

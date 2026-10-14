@@ -75,7 +75,7 @@ effective_target(const rampg_t *ramp)
  * de/dstep = accel * dt * e / vb and so grows without bound as vb falls
  * to zero, which lands the ramp on the target at speed. Clamping keeps
  * the state on or inside the envelope, where no error can accumulate.
- * See docs/s-curve-profile.md for the derivation.
+ * See docs/design.md for the derivation.
  */
 static float
 brake_envelope(float dist, float accel, float dt)

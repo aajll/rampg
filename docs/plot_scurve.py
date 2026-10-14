@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["matplotlib"]
+# ///
 """Regenerate the S-curve figures in docs/images.
 
 The figures are produced by driving the real library rather than by
@@ -7,9 +11,9 @@ implementation. The C source is compiled into a temporary shared object and
 called through ctypes.
 
 Usage:
-    python docs/plot_scurve.py
+    uv run docs/plot_scurve.py
 
-Requires matplotlib and a C compiler.
+Requires uv, which supplies matplotlib, and a C compiler.
 """
 
 from __future__ import annotations
