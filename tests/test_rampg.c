@@ -1,4 +1,6 @@
 /*
+ * SPDX-License-Identifier: MIT
+ *
  * @file test_rampg.c
  * @brief Unit tests for rampg.
  */

@@ -1,4 +1,11 @@
 {
   "schema": "misch/baseline@2",
-  "fingerprints": {}
+  "fingerprints": {
+    "baba2b7ec5d0": {
+      "rule_id": "misra-c2012-15.7",
+      "file": "src/rampg.c",
+      "message": "misra violation (use --rule-texts=<file> to get proper output)",
+      "count": 1
+    }
+  }
 }
