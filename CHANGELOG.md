@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `scripts/format.sh`, which pins the clang-format release and runs it with `uvx`. CI checks formatting through it.
+- CI runs the MISRA C:2023 analysis with `misch` for the x86_64 and aarch64 profiles, and fails on any finding outside the baselines recorded in `analysis/baseline/`.
+- CI compiles the library with warnings as errors using two releases of a vendor C11 compiler for a 16-bit-MAU DSP target, under both of its object formats.
+
+### Changed
+
+- CI installs Meson, Ninja and gcovr with `uv` instead of `pip` and `apt`.
+
 ## [0.2.1] - 2026-08-16
 
 ### Fixed

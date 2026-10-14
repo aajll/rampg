@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: MIT
+
 test_exe = executable(
   'test_rampg',
   files('test_rampg.c'),
