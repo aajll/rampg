@@ -10,10 +10,6 @@
 #ifndef RAMPG_H_
 #define RAMPG_H_
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 /* ================ INCLUDES ================================================ */
 
 #include "rampg_conf.h"
@@ -373,9 +369,5 @@ rampg_state_t rampg_get_state(const rampg_t *ramp);
  * @param value         Value to snap to.
  */
 void rampg_reset(rampg_t *ramp, float value);
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* RAMPG_H_ */

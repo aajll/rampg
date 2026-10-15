@@ -22,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Removed
 
 - `rampg_version.h`. `rampg.h` defines the version macros.
+- The `extern "C"` guards in `rampg.h`. The library is C11 only and its headers make no C++ claim.
 
 ## [0.2.1] - 2026-08-16
 
