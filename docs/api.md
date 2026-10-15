@@ -214,4 +214,4 @@ The same pattern serves voltage or frequency setpoint shaping between operating 
 #endif
 ```
 
-`RAMPG_VERSION_STRING` is the same string as `RAMPG_VERSION`. `rampg_version.h` is a deprecated header that includes `rampg.h`, kept so existing includes compile until the next major release.
+`RAMPG_VERSION_STRING` is the same string as `RAMPG_VERSION`.

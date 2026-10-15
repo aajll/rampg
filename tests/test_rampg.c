@@ -6,7 +6,6 @@
  */
 
 #include "rampg.h"
-#include "rampg_version.h"
 #include <float.h>
 #include <math.h>
 #include <stdio.h>
@@ -1907,7 +1906,7 @@ TEST_CASE(test_scurve_retarget_sweep_stays_bounded)
         }
 }
 
-/* The deprecated version header still exposes the macros from rampg.h. */
+/* The version number agrees with its parts. */
 TEST_CASE(test_version_macros)
 {
         TEST_ASSERT(RAMPG_VERSION_NUMBER
