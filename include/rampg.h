@@ -20,6 +20,32 @@ extern "C" {
 
 #include <stdbool.h>
 
+/* ================ VERSION ================================================= */
+
+/**
+ * @name Version
+ * @brief Release of this header, for diagnostics and @c #if checks.
+ *
+ * @details
+ *    @c RAMPG_VERSION_NUMBER is @c MAJOR*10000 @c + @c MINOR*100
+ *    @c + @c PATCH with type @c long, so it cannot overflow where @c int is
+ *    16 bits. The Meson build fails to configure when these values differ
+ *    from the project version.
+ * @{
+ */
+/* cppcheck-suppress-begin misra-c2012-2.5 ; @deviation Public version macros
+ * for consumer diagnostics and #if checks; the library does not use them. */
+#define RAMPG_VERSION_MAJOR  0
+#define RAMPG_VERSION_MINOR  2
+#define RAMPG_VERSION_PATCH  1
+#define RAMPG_VERSION        "0.2.1"
+#define RAMPG_VERSION_STRING RAMPG_VERSION
+#define RAMPG_VERSION_NUMBER                                                   \
+        ((RAMPG_VERSION_MAJOR * 10000L) + (RAMPG_VERSION_MINOR * 100L)         \
+         + RAMPG_VERSION_PATCH)
+/* cppcheck-suppress-end misra-c2012-2.5 ; @deviation As above. */
+/** @} */
+
 /* ================ DEFINES ================================================= */
 
 /* ================ STRUCTURES ============================================== */

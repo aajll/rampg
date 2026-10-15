@@ -40,7 +40,7 @@ scripts/format.sh --fix    # rewrite in place
 
 ### 1.2 Notes
 
-- `meson setup` generates the optional `rampg_version.h` into the build directory; `rampg.h` does not include it.
+- `include/rampg.h` defines the version macros, and `meson setup` fails when they differ from `project(version:)`, so a release updates both. `include/rampg_version.h` is a deprecated header that includes `rampg.h`.
 - Compile-time defaults (`RAMPG_DEFAULT_RATE`, `RAMPG_DEFAULT_ACCEL`, `RAMPG_LIMIT_MIN`, `RAMPG_LIMIT_MAX`, `RAMPG_DEFAULT_SHAPE`) live in `rampg_conf.h`. The only Meson option is `build_tests`.
 - `docs/plot_scurve.py` regenerates the graphs in `docs/images/` with `uv run docs/plot_scurve.py`.
 

@@ -177,4 +177,4 @@ An update does a fixed amount of work with no loops. The S-curve profile evaluat
 - The documentation examples are compiled by the `rampg docs examples` test.
 - CI compiles the library with TI C2000 CGT 22.6.2 and 25.11.1 under COFF and EABI, with `--float_support=fpu32` and warnings as errors.
 - `scripts/format.sh --check` enforces the pinned clang-format.
-- `misch` checks MISRA C:2023 for the x86_64 and AArch64 profiles against committed baselines.
+- `misch` checks MISRA C:2023 for the x86_64 and AArch64 profiles against committed baselines. The version macros in `rampg.h` carry an inline deviation of Rule 2.5 (unused macro), because they exist for consumers and the library does not use them.
