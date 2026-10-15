@@ -59,8 +59,6 @@ The headers install to a `rampg/` subdirectory, and the `pkg-config` flags add t
 #include <rampg/rampg.h>
 ```
 
-`rampg_version.h` is installed beside it as a deprecated header that includes `rampg.h`.
-
 ## Configuration
 
 The defaults that `rampg_init` applies are macros in `rampg_conf.h`. Define them with `-D`, or before the first include of `rampg.h`, identically for the library source and every file that includes the header.

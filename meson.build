@@ -57,7 +57,6 @@ rampg_lib = static_library(
 install_headers(
   'include/rampg.h',
   'include/rampg_conf.h',
-  'include/rampg_version.h',
   subdir: 'rampg'
 )
 
