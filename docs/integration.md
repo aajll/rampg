@@ -27,7 +27,7 @@ Keep both headers on the same include path, because `rampg.h` includes `rampg_co
 #include "rampg.h"
 ```
 
-`rampg_version.h` exists only in Meson builds.
+`rampg.h` defines the version macros described in [api.md](api.md#version).
 
 ## Meson subproject
 
@@ -57,10 +57,9 @@ The headers install to a `rampg/` subdirectory, and the `pkg-config` flags add t
 <!-- snippet: skip -->
 ```c
 #include <rampg/rampg.h>
-#include <rampg/rampg_version.h>
 ```
 
-`rampg_version.h` defines `RAMPG_VERSION` and `RAMPG_VERSION_STRING` as the version string, and `RAMPG_VERSION_MAJOR`, `RAMPG_VERSION_MINOR` and `RAMPG_VERSION_PATCH` as integers.
+`rampg_version.h` is installed beside it as a deprecated header that includes `rampg.h`.
 
 ## Configuration
 

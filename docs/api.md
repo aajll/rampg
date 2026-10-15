@@ -193,3 +193,25 @@ ramp_status(const rampg_t *ramp)
 ### Other uses
 
 The same pattern serves voltage or frequency setpoint shaping between operating points, a bounded shutdown as a ramp followed by a trip, motor speed profiles with controlled acceleration and deceleration, and smoothing of any operator setpoint where a sudden jump would be harmful.
+
+## Version
+
+`rampg.h` defines the release it belongs to, so a copied-in header still identifies itself:
+
+<!-- snippet: skip -->
+```c
+#define RAMPG_VERSION_MAJOR 0
+#define RAMPG_VERSION_MINOR 2
+#define RAMPG_VERSION_PATCH 1
+#define RAMPG_VERSION "0.2.1"
+```
+
+`RAMPG_VERSION_NUMBER` is `MAJOR * 10000 + MINOR * 100 + PATCH` as a `long`, so it holds any version where `int` is 16 bits. Compare it in the preprocessor to require a minimum release:
+
+```c
+#if RAMPG_VERSION_NUMBER < 201L
+#error "rampg 0.2.1 or later is required"
+#endif
+```
+
+`RAMPG_VERSION_STRING` is the same string as `RAMPG_VERSION`. `rampg_version.h` is a deprecated header that includes `rampg.h`, kept so existing includes compile until the next major release.

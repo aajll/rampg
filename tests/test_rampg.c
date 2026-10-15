@@ -6,6 +6,7 @@
  */
 
 #include "rampg.h"
+#include "rampg_version.h"
 #include <float.h>
 #include <math.h>
 #include <stdio.h>
@@ -1906,6 +1907,15 @@ TEST_CASE(test_scurve_retarget_sweep_stays_bounded)
         }
 }
 
+/* The deprecated version header still exposes the macros from rampg.h. */
+TEST_CASE(test_version_macros)
+{
+        TEST_ASSERT(RAMPG_VERSION_NUMBER
+                    == ((RAMPG_VERSION_MAJOR * 10000L)
+                        + (RAMPG_VERSION_MINOR * 100L) + RAMPG_VERSION_PATCH));
+        TEST_ASSERT(RAMPG_VERSION_STRING[0] != '\0');
+}
+
 /* ================ Runner ===================================================
  */
 
@@ -2094,6 +2104,7 @@ main(void)
         run_test(test_sc_precharge_scenario, "test_sc_precharge_scenario");
         run_test(test_sc_frequency_ramp_scenario,
                  "test_sc_frequency_ramp_scenario");
+        run_test(test_version_macros, "test_version_macros");
 
         fprintf(stdout, "\n=== All %d tests passed ===\n\n", test_count);
         return EXIT_SUCCESS;
