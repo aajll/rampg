@@ -32,9 +32,9 @@
 /* cppcheck-suppress-begin misra-c2012-2.5 ; @deviation Public version macros
  * for consumer diagnostics and #if checks; the library does not use them. */
 #define RAMPG_VERSION_MAJOR  0
-#define RAMPG_VERSION_MINOR  2
-#define RAMPG_VERSION_PATCH  1
-#define RAMPG_VERSION        "0.2.1"
+#define RAMPG_VERSION_MINOR  3
+#define RAMPG_VERSION_PATCH  0
+#define RAMPG_VERSION        "0.3.0"
 #define RAMPG_VERSION_STRING RAMPG_VERSION
 #define RAMPG_VERSION_NUMBER                                                   \
         ((RAMPG_VERSION_MAJOR * 10000L) + (RAMPG_VERSION_MINOR * 100L)         \
