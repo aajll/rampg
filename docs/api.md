@@ -201,16 +201,16 @@ The same pattern serves voltage or frequency setpoint shaping between operating 
 <!-- snippet: skip -->
 ```c
 #define RAMPG_VERSION_MAJOR 0
-#define RAMPG_VERSION_MINOR 2
-#define RAMPG_VERSION_PATCH 1
-#define RAMPG_VERSION "0.2.1"
+#define RAMPG_VERSION_MINOR 3
+#define RAMPG_VERSION_PATCH 0
+#define RAMPG_VERSION "0.3.0"
 ```
 
 `RAMPG_VERSION_NUMBER` is `MAJOR * 10000 + MINOR * 100 + PATCH` as a `long`, so it holds any version where `int` is 16 bits. Compare it in the preprocessor to require a minimum release:
 
 ```c
-#if RAMPG_VERSION_NUMBER < 201L
-#error "rampg 0.2.1 or later is required"
+#if RAMPG_VERSION_NUMBER < 300L
+#error "rampg 0.3.0 or later is required"
 #endif
 ```
 
